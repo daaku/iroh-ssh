@@ -59,23 +59,44 @@ pub async fn server_mode(server_args: ServerArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Parses the `%h` or `%h:%p` argument given to the proxy into an endpoint id.
+fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
+    let hostname = target.split(':').next().unwrap_or_default();
+    EndpointId::from_str(hostname)
+        .map_err(|e| anyhow::anyhow!("invalid endpoint id '{hostname}': {e}"))
+}
+
 pub async fn proxy_mode(proxy_args: ProxyArgs) -> anyhow::Result<()> {
+    let endpoint_id = parse_proxy_target(&proxy_args.endpoint_id)?;
     let iroh_ssh = IrohSsh::builder()
         .accept_incoming(false)
         .relay_urls(parse_relay_urls(&proxy_args.relay_url)?)
         .extra_relay_urls(parse_relay_urls(&proxy_args.extra_relay_url)?)
         .build()
         .await?;
-    let hostname = proxy_args
-        .endpoint_id
-        .split(":")
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("failed to parse hostname"))?;
-    if hostname.len() == 64 && hostname.chars().all(|c| c.is_ascii_hexdigit()) {
-        let endpoint_id = EndpointId::from_str(hostname)?;
-        iroh_ssh.connect_pubkey(endpoint_id).await
-    } else {
-        // fallback to dns base (or ip) HostName connection (no iroh)
-        iroh_ssh.connect_tcpip(&proxy_args.endpoint_id).await
+    iroh_ssh.connect_pubkey(endpoint_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENDPOINT_ID: &str = "38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac";
+
+    #[test]
+    fn proxy_target_accepts_endpoint_id_with_or_without_port() {
+        let expected = EndpointId::from_str(ENDPOINT_ID).unwrap();
+        assert_eq!(parse_proxy_target(ENDPOINT_ID).unwrap(), expected);
+        assert_eq!(
+            parse_proxy_target(&format!("{ENDPOINT_ID}:22")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn proxy_target_rejects_hostnames_and_ips() {
+        for target in ["localhost", "localhost:22", "127.0.0.1:22", "example.com"] {
+            assert!(parse_proxy_target(target).is_err(), "{target} should fail");
+        }
     }
 }

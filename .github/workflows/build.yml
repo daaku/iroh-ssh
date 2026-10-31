@@ -292,10 +292,6 @@ jobs:
 
           Host iroh-endpoint-config
             HostName $ENDPOINT_HOST
-
-          Host iroh-localhost-config
-            HostName localhost
-            User $CURRENT_USER
           EOF
           chmod 600 "$SSH_CONFIG_FILE"
 
@@ -389,10 +385,7 @@ jobs:
           )
 
           run_success_case inline-endpoint-id inline-endpoint-id ssh "${COMMON_SSH_ARGS[@]}" "$CONNECTION_STRING" "printf inline-endpoint-id"
-          run_success_case inline-localhost inline-localhost ssh "${COMMON_SSH_ARGS[@]}" "$CURRENT_USER@localhost" "printf inline-localhost"
-          run_success_case inline-loopback-ip inline-loopback-ip ssh "${COMMON_SSH_ARGS[@]}" "$CURRENT_USER@127.0.0.1" "printf inline-loopback-ip"
           run_success_case config-endpoint-explicit-user config-endpoint-explicit-user ssh "${COMMON_SSH_ARGS[@]}" "$CURRENT_USER@iroh-endpoint-config" "printf config-endpoint-explicit-user"
-          run_success_case config-localhost-config-user config-localhost-config-user ssh "${COMMON_SSH_ARGS[@]}" "iroh-localhost-config" "printf config-localhost-config-user"
 
           run_case normal-exit-0 0 ssh "${COMMON_SSH_ARGS[@]}" "$CONNECTION_STRING" "sh -c 'exit 0'"
           run_case custom-exit-197 197 ssh "${COMMON_SSH_ARGS[@]}" "$CONNECTION_STRING" "sh -c 'exit 197'"
@@ -563,11 +556,7 @@ jobs:
             @(
               '',
               'Host iroh-endpoint-config',
-              "  HostName $EndpointHost",
-              '',
-              'Host iroh-localhost-config',
-              '  HostName localhost',
-              "  User $CurrentUser"
+              "  HostName $EndpointHost"
             ) | Add-Content -Path $UserSshConfig
 
             $ProxyCommand = ('"{0}" proxy %h' -f $BinPath)
@@ -580,10 +569,7 @@ jobs:
             )
 
             Invoke-SuccessCase -Name 'inline-endpoint-id' -ExpectedText 'inline-endpoint-id' -Target $ConnectionString
-            Invoke-SuccessCase -Name 'inline-localhost' -ExpectedText 'inline-localhost' -Target ("{0}@localhost" -f $CurrentUser)
-            Invoke-SuccessCase -Name 'inline-loopback-ip' -ExpectedText 'inline-loopback-ip' -Target ("{0}@127.0.0.1" -f $CurrentUser)
             Invoke-SuccessCase -Name 'config-endpoint-explicit-user' -ExpectedText 'config-endpoint-explicit-user' -Target ("{0}@iroh-endpoint-config" -f $CurrentUser)
-            Invoke-SuccessCase -Name 'config-localhost-config-user' -ExpectedText 'config-localhost-config-user' -Target 'iroh-localhost-config'
 
             Invoke-ExitCase -Name 'normal-exit' -ExpectedExit 0 -Target $ConnectionString -RemoteCommand 'cmd /c exit 0'
             Invoke-ExitCase -Name 'custom-exit' -ExpectedExit 197 -Target $ConnectionString -RemoteCommand 'cmd /c exit 197'

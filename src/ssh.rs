@@ -189,21 +189,6 @@ impl IrohSsh {
         Ok(())
     }
 
-    pub async fn connect_tcpip(&self, host_addr: &str) -> anyhow::Result<()> {
-        let conn = tokio::net::TcpStream::connect(host_addr).await?;
-        let (mut tcp_read, mut tcp_write) = conn.into_split();
-        let (mut local_read, mut local_write) = (tokio::io::stdin(), tokio::io::stdout());
-        let a_to_b = async move {
-            let res = tokio::io::copy(&mut local_read, &mut tcp_write).await;
-            tcp_write.shutdown().await.ok();
-            res
-        };
-        let b_to_a = async move { tokio::io::copy(&mut tcp_read, &mut local_write).await };
-
-        let (_, _) = tokio::join!(a_to_b, b_to_a);
-        Ok(())
-    }
-
     pub fn endpoint_id(&self) -> EndpointId {
         self.inner.as_ref().expect("inner not set").endpoint.id()
     }
