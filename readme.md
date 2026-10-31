@@ -193,7 +193,7 @@ Display its Endpoint ID and share it to allow connection
 
 - **Endpoint ID access**: Anyone with the Endpoint ID can reach your SSH port
 - **SSH authentication**: SSH key file, certificate and password auth are supported
-- **Persistent keys**: Uses dedicated `.ssh/iroh_ssh_ed25519` keypair
+- **Persistent keys**: Uses dedicated `.ssh/irohssh_ed25519` keypair
 - **QUIC encryption**: Transport layer encryption between endpoints
 
 ## Status
