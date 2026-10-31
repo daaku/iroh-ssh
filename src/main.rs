@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::bail;
+use anyhow::{Context as _, anyhow, bail};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH};
 use homedir::my_home;
@@ -430,14 +430,12 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
     }
 
     if priv_key.exists() {
-        // read secret key
-        if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
-            let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
-            sk_bytes.copy_from_slice(z32::decode(secret_key.as_slice())?.as_slice());
-            Ok(SecretKey::from_bytes(&sk_bytes))
-        } else {
-            bail!("failed to read secret key from {}", priv_key.display())
-        }
+        let encoded = std::fs::read(&priv_key)
+            .with_context(|| format!("failed to read secret key from {}", priv_key.display()))?;
+        let bytes: [u8; SECRET_KEY_LENGTH] = z32::decode(&encoded)?
+            .try_into()
+            .map_err(|_| anyhow!("invalid secret key in {}", priv_key.display()))?;
+        Ok(SecretKey::from_bytes(&bytes))
     } else {
         let secret_key = default_secret_key.clone();
         let public_key = secret_key.public();
@@ -556,5 +554,14 @@ mod tests {
 
         let metadata = std::fs::metadata(dir.path().join("irohssh_ed25519")).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn wrong_length_key_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // valid z-base32, but not 32 bytes
+        std::fs::write(dir.path().join("irohssh_ed25519"), "yyyy").unwrap();
+
+        assert!(dot_ssh(&SecretKey::generate(), Some(dir.path())).is_err());
     }
 }
