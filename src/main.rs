@@ -115,7 +115,7 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
         .accept(ALPN, SshForwarder { ssh_port })
         .spawn();
 
-    println!("Connect to this this machine:");
+    println!("Connect to this machine:");
     println!(
         "\n  ssh -o ProxyCommand=\"iroh-ssh proxy %h\" {}@{}\n",
         whoami::username().unwrap_or("UNKNOWN_USER".to_string()),

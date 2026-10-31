@@ -12,7 +12,7 @@
 # on server
 > iroh-ssh server --persist
 
-    Connect to this this machine:
+    Connect to this machine:
 
     ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
@@ -107,7 +107,7 @@ Works through any firewall, NAT, or private network. No configuration needed.
 
 > iroh-ssh server --persist
 
-    Connect to this this machine:
+    Connect to this machine:
 
     ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
@@ -128,7 +128,7 @@ or use ephemeral keys
 
 > iroh-ssh server
 
-    Connect to this this machine:
+    Connect to this machine:
 
     ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
