@@ -15,9 +15,8 @@ use iroh::{
     protocol::{ProtocolHandler, Router},
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
-use regex::Regex;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
     net::TcpStream,
 };
 
@@ -89,15 +88,9 @@ async fn main() -> anyhow::Result<()> {
 
 async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
     let ssh_port = args.ssh_port;
-    if is_ssh_server_available(ssh_port, Duration::from_secs(10))
-        .await
-        .is_err()
-    {
-        eprintln!(
-            "SSH server not available on port {ssh_port}, incoming connections will fail. Please ensure you have an SSH server installed and running on port {ssh_port}."
-        );
-        bail!("no ssh server available on specified port")
-    }
+    check_ssh_server(ssh_port).await.with_context(|| {
+        format!("no ssh server on port {ssh_port}, please install one or set --ssh-port")
+    })?;
 
     let key_dir = if args.persist {
         Some(match args.key_dir {
@@ -219,25 +212,20 @@ fn custom_relay_map(
     }
 }
 
-async fn is_ssh_server_available(port: u16, timeout: Duration) -> anyhow::Result<()> {
-    tokio::time::timeout(timeout, async {
-        let stream = TcpStream::connect(format!("localhost:{port}")).await?;
-        let mut reader = BufReader::new(stream);
-        let mut line_buf = String::new();
-        let regex = Regex::new(r"^SSH-\d+\.\d+-").expect("valid regex");
-
-        loop {
-            line_buf.clear();
-            if reader.read_line(&mut line_buf).await? == 0 {
-                bail!("SSH server closed the connection");
-            }
-            if regex.is_match(&line_buf) {
-                reader.shutdown().await.ok();
+async fn check_ssh_server(port: u16) -> anyhow::Result<()> {
+    let probe = async {
+        let stream = TcpStream::connect(("localhost", port)).await?;
+        let mut lines = BufReader::new(stream).split(b'\n');
+        while let Some(line) = lines.next_segment().await? {
+            if line.starts_with(b"SSH-") {
                 return Ok(());
             }
         }
-    })
-    .await?
+        bail!("connection closed before the ssh banner")
+    };
+    tokio::time::timeout(Duration::from_secs(10), probe)
+        .await
+        .context("timed out")?
 }
 
 /// Forwards incoming iroh connections to the local ssh server.
