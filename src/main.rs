@@ -1,4 +1,5 @@
 use std::{
+    io::Write as _,
     path::{Path, PathBuf},
     str::FromStr as _,
     sync::Arc,
@@ -441,11 +442,20 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
         let secret_key = default_secret_key.clone();
         let public_key = secret_key.public();
 
-        std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes()))?;
+        write_private(&priv_key, &z32::encode(&secret_key.to_bytes()))?;
         std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
 
         Ok(secret_key)
     }
+}
+
+/// Creates a file only the current user can read, failing if it already exists.
+fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(contents.as_bytes())
 }
 
 #[cfg(test)]
@@ -534,5 +544,17 @@ mod tests {
 
         let reloaded = dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
         assert_eq!(reloaded.to_bytes(), key.to_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_key_is_only_readable_by_owner() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+
+        let metadata = std::fs::metadata(dir.path().join("irohssh_ed25519")).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
 }
