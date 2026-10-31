@@ -428,8 +428,7 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
         println!("[INFO] created .ssh folder: {}", ssh_dir.display());
     }
 
-    // check pub and priv key already exists
-    if pub_key.exists() && priv_key.exists() {
+    if priv_key.exists() {
         // read secret key
         if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
             let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
@@ -442,8 +441,8 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
         let secret_key = default_secret_key.clone();
         let public_key = secret_key.public();
 
-        std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
         std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes()))?;
+        std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
 
         Ok(secret_key)
     }
@@ -525,5 +524,15 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
         }
+    }
+
+    #[test]
+    fn key_survives_a_missing_public_key_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+        std::fs::remove_file(dir.path().join("irohssh_ed25519.pub")).unwrap();
+
+        let reloaded = dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+        assert_eq!(reloaded.to_bytes(), key.to_bytes());
     }
 }
