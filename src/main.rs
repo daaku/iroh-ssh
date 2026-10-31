@@ -191,25 +191,22 @@ fn custom_relay_map(
     extra_relay_urls: &[RelayUrl],
     token: Option<&str>,
 ) -> Option<RelayMap> {
-    if !relay_urls.is_empty() {
-        let relay_map: RelayMap = relay_urls.iter().cloned().collect();
-        Some(match token {
-            Some(token) => relay_map.with_auth_token(token),
-            None => relay_map,
-        })
+    let (relay_map, urls) = if !relay_urls.is_empty() {
+        (RelayMap::empty(), relay_urls)
     } else if !extra_relay_urls.is_empty() {
-        let relay_map = RelayMode::Default.relay_map();
-        for url in extra_relay_urls {
-            let mut config = RelayConfig::from(url.clone());
-            if let Some(token) = token {
-                config = config.with_auth_token(token);
-            }
-            relay_map.insert(url.clone(), Arc::new(config));
-        }
-        Some(relay_map)
+        (RelayMode::Default.relay_map(), extra_relay_urls)
     } else {
-        None
+        return None;
+    };
+
+    for url in urls {
+        let mut config = RelayConfig::from(url.clone());
+        if let Some(token) = token {
+            config = config.with_auth_token(token);
+        }
+        relay_map.insert(url.clone(), Arc::new(config));
     }
+    Some(relay_map)
 }
 
 async fn check_ssh_server(port: u16) -> anyhow::Result<()> {
@@ -351,7 +348,7 @@ mod tests {
     #[test]
     fn extra_relay_urls_get_the_token_but_defaults_do_not() {
         let map = custom_relay_map(&[], &[url()], Some("secret")).unwrap();
-        let relays: Vec<std::sync::Arc<RelayConfig>> = map.relays();
+        let relays: Vec<Arc<RelayConfig>> = map.relays();
         assert!(relays.len() > 1);
         for relay in relays {
             let expected = (relay.url == url()).then_some("secret");
