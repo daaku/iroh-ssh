@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
@@ -292,9 +292,10 @@ fn load_or_create_key(dir: &Path) -> anyhow::Result<SecretKey> {
     if priv_key.exists() {
         let encoded = std::fs::read(&priv_key)
             .with_context(|| format!("failed to read secret key from {}", priv_key.display()))?;
-        let bytes: [u8; 32] = z32::decode(&encoded)?
-            .try_into()
-            .map_err(|_| anyhow!("invalid secret key in {}", priv_key.display()))?;
+        let bytes: [u8; 32] = z32::decode(&encoded)
+            .ok()
+            .and_then(|decoded| decoded.try_into().ok())
+            .with_context(|| format!("invalid secret key in {}", priv_key.display()))?;
         return Ok(SecretKey::from_bytes(&bytes));
     }
 
