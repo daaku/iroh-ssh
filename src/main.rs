@@ -111,7 +111,7 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
     };
 
     let endpoint = bind_endpoint(secret_key, true, &args.relay).await?;
-    let _router = Router::builder(endpoint.clone())
+    let router = Router::builder(endpoint.clone())
         .accept(ALPN, SshForwarder { ssh_port })
         .spawn();
 
@@ -133,6 +133,7 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
     println!("Waiting for incoming connections...");
     println!("Press Ctrl+C to exit");
     tokio::signal::ctrl_c().await?;
+    router.shutdown().await?;
     Ok(())
 }
 
