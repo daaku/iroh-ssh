@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context as _, anyhow, bail};
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
@@ -23,51 +23,58 @@ use tokio::{
 
 const ALPN: &[u8] = b"/iroh/ssh";
 
-const RELAY_URL_HELP: &str = "Use only these relay servers, replacing the defaults (repeatable)";
-const EXTRA_RELAY_URL_HELP: &str = "Add relay servers alongside the defaults (repeatable)";
-const KEY_DIR_HELP: &str = "Directory for iroh-ssh identity keys (default: ~/.ssh)";
-
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(name = "iroh-ssh", about = "ssh without ip", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 enum Cmd {
+    /// Accept iroh connections and forward them to the local ssh server
     Server(ServerArgs),
+    /// Connect stdin and stdout to a server, for use as ssh's ProxyCommand
     Proxy(ProxyArgs),
 }
 
-#[derive(Args, Clone, Debug)]
-struct ProxyArgs {
-    #[arg(help = "Proxy Endpoint ID")]
-    endpoint_id: String,
+#[derive(Args)]
+struct RelayArgs {
+    /// Use only these relay servers, replacing the defaults (repeatable)
+    #[arg(long, value_name = "URL", conflicts_with = "extra_relay_url")]
+    relay_url: Vec<RelayUrl>,
 
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    extra_relay_url: Vec<String>,
+    /// Add relay servers alongside the defaults (repeatable)
+    #[arg(long, value_name = "URL")]
+    extra_relay_url: Vec<RelayUrl>,
 }
 
-#[derive(Args, Clone, Debug)]
+#[derive(Args)]
+struct ProxyArgs {
+    /// Server endpoint id, as ssh's %h or %h:%p
+    #[arg(value_name = "ENDPOINT_ID", value_parser = parse_proxy_target)]
+    endpoint_id: EndpointId,
+
+    #[command(flatten)]
+    relay: RelayArgs,
+}
+
+#[derive(Args)]
 struct ServerArgs {
-    #[arg(long, default_value = "22")]
+    /// Port of the local ssh server
+    #[arg(long, default_value_t = 22)]
     ssh_port: u16,
 
-    #[arg(short, long, default_value_t = false)]
+    /// Keep the same endpoint id across restarts
+    #[arg(short, long)]
     persist: bool,
 
-    #[arg(long, value_name = "DIR", help = KEY_DIR_HELP)]
+    /// Directory for iroh-ssh identity keys (default: ~/.ssh)
+    #[arg(long, value_name = "DIR", requires = "persist")]
     key_dir: Option<PathBuf>,
 
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    extra_relay_url: Vec<String>,
+    #[command(flatten)]
+    relay: RelayArgs,
 }
 
 #[tokio::main]
@@ -78,12 +85,6 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Server(args) => server_mode(args).await,
         Cmd::Proxy(args) => proxy_mode(args).await,
     }
-}
-
-fn parse_relay_urls(urls: &[String]) -> anyhow::Result<Vec<RelayUrl>> {
-    urls.iter()
-        .map(|s| RelayUrl::from_str(s).map_err(|e| anyhow::anyhow!("invalid relay URL '{s}': {e}")))
-        .collect()
 }
 
 async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
@@ -111,9 +112,7 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
         None => SecretKey::generate(),
     };
 
-    let relay_urls = parse_relay_urls(&args.relay_url)?;
-    let extra_relay_urls = parse_relay_urls(&args.extra_relay_url)?;
-    let endpoint = bind_endpoint(secret_key, true, &relay_urls, &extra_relay_urls).await?;
+    let endpoint = bind_endpoint(secret_key, true, &args.relay).await?;
     let _router = Router::builder(endpoint.clone())
         .accept(ALPN, SshForwarder { ssh_port })
         .spawn();
@@ -141,19 +140,14 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
 
 /// Parses the `%h` or `%h:%p` argument given to the proxy into an endpoint id.
 fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
-    let hostname = target.split(':').next().unwrap_or_default();
-    EndpointId::from_str(hostname)
-        .map_err(|e| anyhow::anyhow!("invalid endpoint id '{hostname}': {e}"))
+    let hostname = target.split_once(':').map_or(target, |(host, _port)| host);
+    EndpointId::from_str(hostname).with_context(|| format!("invalid endpoint id '{hostname}'"))
 }
 
 async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
-    let endpoint_id = parse_proxy_target(&args.endpoint_id)?;
-    let relay_urls = parse_relay_urls(&args.relay_url)?;
-    let extra_relay_urls = parse_relay_urls(&args.extra_relay_url)?;
-    let endpoint =
-        bind_endpoint(SecretKey::generate(), false, &relay_urls, &extra_relay_urls).await?;
+    let endpoint = bind_endpoint(SecretKey::generate(), false, &args.relay).await?;
 
-    let conn = endpoint.connect(endpoint_id, ALPN).await?;
+    let conn = endpoint.connect(args.endpoint_id, ALPN).await?;
     let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
     let (mut local_read, mut local_write) = (tokio::io::stdin(), tokio::io::stdout());
     let a_to_b = async move {
@@ -170,8 +164,7 @@ async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
 async fn bind_endpoint(
     secret_key: SecretKey,
     announce: bool,
-    relay_urls: &[RelayUrl],
-    extra_relay_urls: &[RelayUrl],
+    relay: &RelayArgs,
 ) -> anyhow::Result<Endpoint> {
     let mdns_lookup = iroh_mdns_peer_lookup::Options::new()
         .announce(announce)
@@ -181,9 +174,11 @@ async fn bind_endpoint(
         .address_lookup(DhtAddressLookup::builder())
         .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
-    if let Some(relay_map) =
-        custom_relay_map(relay_urls, extra_relay_urls, relay_auth_token().as_deref())
-    {
+    if let Some(relay_map) = custom_relay_map(
+        &relay.relay_url,
+        &relay.extra_relay_url,
+        relay_auth_token().as_deref(),
+    ) {
         builder = builder.relay_mode(RelayMode::Custom(relay_map));
     }
 
@@ -385,7 +380,7 @@ mod tests {
     #[test]
     fn only_server_and_proxy_are_accepted() {
         assert!(Cli::try_parse_from(["iroh-ssh", "server"]).is_ok());
-        assert!(Cli::try_parse_from(["iroh-ssh", "proxy", "abc"]).is_ok());
+        assert!(Cli::try_parse_from(["iroh-ssh", "proxy", ENDPOINT_ID]).is_ok());
 
         for args in [
             vec!["iroh-ssh"],
@@ -430,5 +425,31 @@ mod tests {
         std::fs::write(dir.path().join("irohssh_ed25519"), "yyyy").unwrap();
 
         assert!(load_or_create_key(dir.path()).is_err());
+    }
+
+    #[test]
+    fn relay_flags_conflict() {
+        let url = "https://relay.example.com";
+        let args = [
+            "iroh-ssh",
+            "server",
+            "--relay-url",
+            url,
+            "--extra-relay-url",
+            url,
+        ];
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn invalid_relay_url_is_rejected() {
+        let args = ["iroh-ssh", "server", "--relay-url", "not a url"];
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn key_dir_requires_persist() {
+        assert!(Cli::try_parse_from(["iroh-ssh", "server", "--key-dir", "/tmp"]).is_err());
+        assert!(Cli::try_parse_from(["iroh-ssh", "server", "-p", "--key-dir", "/tmp"]).is_ok());
     }
 }
