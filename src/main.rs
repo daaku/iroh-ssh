@@ -16,11 +16,15 @@ use iroh::{
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader},
+    io::{
+        AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
+        BufReader,
+    },
     net::TcpStream,
 };
 
 const ALPN: &[u8] = b"/iroh/ssh";
+const COPY_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Parser)]
 #[command(name = "iroh-ssh", about = "ssh without ip", version)]
@@ -133,13 +137,11 @@ async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
     // A failed write means the server stopped reading, and whatever it sent
     // before that is still worth receiving, so only the read side's errors matter.
     let stdin_to_remote = async {
-        tokio::io::copy(&mut tokio::io::stdin(), &mut send)
-            .await
-            .ok();
+        copy_flushing(&mut tokio::io::stdin(), &mut send).await.ok();
         send.finish().ok();
     };
     let mut stdout = tokio::io::stdout();
-    let remote_to_stdout = tokio::io::copy(&mut recv, &mut stdout);
+    let remote_to_stdout = copy_flushing(&mut recv, &mut stdout);
     tokio::pin!(remote_to_stdout);
 
     // Keep reading after stdin closes, but don't wait for stdin once the server
@@ -152,6 +154,26 @@ async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
     connection.close(0u32.into(), b"done");
     endpoint.close().await;
     Ok(())
+}
+
+/// Copies until EOF. Unlike `tokio::io::copy` the buffer is larger than 8K, which
+/// is the main limit on throughput, and unlike `tokio::io::copy_buf` every chunk
+/// is flushed, because stdout holds back data that doesn't end in a newline.
+async fn copy_flushing<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0; COPY_BUFFER_SIZE];
+    loop {
+        match reader.read(&mut buf).await? {
+            0 => return writer.flush().await,
+            n => {
+                writer.write_all(&buf[..n]).await?;
+                writer.flush().await?;
+            }
+        }
+    }
 }
 
 async fn bind_endpoint(
@@ -240,11 +262,11 @@ impl SshForwarder {
         let (mut ssh_read, mut ssh_write) = ssh_stream.split();
 
         let ssh_to_remote = async {
-            tokio::io::copy(&mut ssh_read, &mut iroh_send).await.ok();
+            copy_flushing(&mut ssh_read, &mut iroh_send).await.ok();
             iroh_send.finish().ok();
         };
         let remote_to_ssh = async {
-            tokio::io::copy(&mut iroh_recv, &mut ssh_write).await.ok();
+            copy_flushing(&mut iroh_recv, &mut ssh_write).await.ok();
             ssh_write.shutdown().await.ok();
         };
         tokio::join!(ssh_to_remote, remote_to_ssh);
@@ -431,5 +453,25 @@ mod tests {
     fn key_dir_requires_persist() {
         assert!(Cli::try_parse_from(["iroh-ssh", "server", "--key-dir", "/tmp"]).is_err());
         assert!(Cli::try_parse_from(["iroh-ssh", "server", "-p", "--key-dir", "/tmp"]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn copy_flushing_flushes_without_a_newline_or_eof() {
+        let (mut input, mut reader) = tokio::io::duplex(64);
+        let (output, mut sink) = tokio::io::duplex(COPY_BUFFER_SIZE);
+        let mut writer = tokio::io::BufWriter::new(output);
+
+        let copy = tokio::spawn(async move { copy_flushing(&mut reader, &mut writer).await });
+
+        input.write_all(b"no newline").await.unwrap();
+        let mut received = [0; 10];
+        tokio::time::timeout(Duration::from_secs(5), sink.read_exact(&mut received))
+            .await
+            .expect("data should arrive while the input is still open")
+            .unwrap();
+        assert_eq!(&received, b"no newline");
+
+        drop(input);
+        copy.await.unwrap().unwrap();
     }
 }
