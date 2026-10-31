@@ -2359,7 +2359,6 @@ dependencies = [
  "regex",
  "tokio",
  "tokio-stream",
- "tracing",
  "whoami",
  "z32",
 ]

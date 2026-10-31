@@ -218,15 +218,8 @@ impl Builder {
             &SecretKey::from_bytes(&self.secret_key),
             self.key_dir.as_deref(),
         ) {
-            Ok(secret_key) => {
-                tracing::info!("dot_ssh_integration: Successfully loaded/created SSH keys");
-                self.secret_key = secret_key.to_bytes();
-            }
+            Ok(secret_key) => self.secret_key = secret_key.to_bytes(),
             Err(e) => {
-                tracing::error!(
-                    "dot_ssh_integration: Failed to load/create SSH keys: {:#}",
-                    e
-                );
                 eprintln!("Warning: Failed to load/create persistent SSH keys: {e:#}");
                 eprintln!("Continuing with ephemeral keys...");
             }
@@ -420,8 +413,6 @@ impl ProtocolHandler for IrohSsh {
 }
 
 fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Result<SecretKey> {
-    tracing::info!("dot_ssh: Function called, key_dir={:?}", key_dir);
-
     let ssh_dir = if let Some(dir) = key_dir {
         dir.to_path_buf()
     } else {
@@ -432,19 +423,13 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
     let pub_key = ssh_dir.join("irohssh_ed25519.pub");
     let priv_key = ssh_dir.join("irohssh_ed25519");
 
-    tracing::debug!("dot_ssh: ssh_dir exists = {}", ssh_dir.exists());
-    tracing::debug!("dot_ssh: pub_key path = {}", pub_key.display());
-    tracing::debug!("dot_ssh: priv_key path = {}", priv_key.display());
-
     if !ssh_dir.exists() {
-        tracing::info!("dot_ssh: Creating ssh_dir: {}", ssh_dir.display());
         std::fs::create_dir_all(&ssh_dir)?;
         println!("[INFO] created .ssh folder: {}", ssh_dir.display());
     }
 
     // check pub and priv key already exists
     if pub_key.exists() && priv_key.exists() {
-        tracing::info!("dot_ssh: Keys exist, reading them");
         // read secret key
         if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
             let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
@@ -454,38 +439,11 @@ fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Re
             bail!("failed to read secret key from {}", priv_key.display())
         }
     } else {
-        tracing::info!("dot_ssh: Keys don't exist, creating new keys");
-
         let secret_key = default_secret_key.clone();
         let public_key = secret_key.public();
 
-        match std::fs::write(&pub_key, z32::encode(public_key.as_bytes())) {
-            Ok(_) => {
-                tracing::info!("dot_ssh: Successfully wrote pub_key");
-            }
-            Err(e) => {
-                tracing::error!(
-                    "dot_ssh: Failed to write pub_key: {} (error kind: {:?})",
-                    e,
-                    e.kind()
-                );
-                return Err(e.into());
-            }
-        }
-
-        match std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes())) {
-            Ok(_) => {
-                tracing::info!("dot_ssh: Successfully wrote priv_key");
-            }
-            Err(e) => {
-                tracing::error!(
-                    "dot_ssh: Failed to write priv_key: {} (error kind: {:?})",
-                    e,
-                    e.kind()
-                );
-                return Err(e.into());
-            }
-        }
+        std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
+        std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes()))?;
 
         Ok(secret_key)
     }
