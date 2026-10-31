@@ -12,7 +12,7 @@ use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
     endpoint::{Connection, RelayMode},
-    protocol::{ProtocolHandler, Router},
+    protocol::{AcceptError, ProtocolHandler, Router},
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
@@ -249,43 +249,38 @@ struct SshForwarder {
     ssh_port: u16,
 }
 
+impl SshForwarder {
+    async fn forward(&self, connection: &Connection) -> anyhow::Result<()> {
+        let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
+        let mut ssh_stream = TcpStream::connect(("localhost", self.ssh_port))
+            .await
+            .context("failed to connect to the ssh server")?;
+        let (mut ssh_read, mut ssh_write) = ssh_stream.split();
+
+        let ssh_to_remote = async {
+            tokio::io::copy(&mut ssh_read, &mut iroh_send).await.ok();
+            iroh_send.finish().ok();
+        };
+        let remote_to_ssh = async {
+            tokio::io::copy(&mut iroh_recv, &mut ssh_write).await.ok();
+            ssh_write.shutdown().await.ok();
+        };
+        tokio::join!(ssh_to_remote, remote_to_ssh);
+
+        // Dropping the connection discards data the client hasn't received yet,
+        // so let the client, which reads last, close it.
+        connection.closed().await;
+        Ok(())
+    }
+}
+
 impl ProtocolHandler for SshForwarder {
-    async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
-        let endpoint_id = connection.remote_id();
-
-        match connection.accept_bi().await {
-            Ok((mut iroh_send, mut iroh_recv)) => {
-                println!("Accepted bidirectional stream from {endpoint_id}");
-
-                match TcpStream::connect(format!("127.0.0.1:{}", self.ssh_port)).await {
-                    Ok(mut ssh_stream) => {
-                        println!("Connected to local SSH server on port {}", self.ssh_port);
-
-                        let (mut local_read, mut local_write) = ssh_stream.split();
-
-                        let a_to_b = async move {
-                            let res = tokio::io::copy(&mut local_read, &mut iroh_send).await;
-                            iroh_send.finish().ok();
-                            res
-                        };
-                        let b_to_a = async move {
-                            let res = tokio::io::copy(&mut iroh_recv, &mut local_write).await;
-                            local_write.shutdown().await.ok();
-                            res
-                        };
-
-                        let (_, _) = tokio::join!(a_to_b, b_to_a);
-                    }
-                    Err(e) => {
-                        println!("Failed to connect to SSH server: {e}");
-                    }
-                }
-            }
-            Err(e) => {
-                println!("Failed to accept bidirectional stream: {e}");
-            }
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let remote = connection.remote_id();
+        println!("Accepted connection from {remote}");
+        if let Err(e) = self.forward(&connection).await {
+            eprintln!("Connection from {remote} failed: {e:#}");
         }
-
         Ok(())
     }
 }
