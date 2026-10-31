@@ -93,7 +93,7 @@ async fn server_mode(server_args: ServerArgs) -> anyhow::Result<()> {
         .relay_urls(parse_relay_urls(&server_args.relay_url)?)
         .extra_relay_urls(parse_relay_urls(&server_args.extra_relay_url)?);
     if server_args.persist {
-        iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration();
+        iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration()?;
     }
     let iroh_ssh = iroh_ssh_builder.build().await?;
 
@@ -214,18 +214,13 @@ impl Builder {
         self
     }
 
-    fn dot_ssh_integration(mut self) -> Self {
-        match dot_ssh(
+    fn dot_ssh_integration(mut self) -> anyhow::Result<Self> {
+        let secret_key = dot_ssh(
             &SecretKey::from_bytes(&self.secret_key),
             self.key_dir.as_deref(),
-        ) {
-            Ok(secret_key) => self.secret_key = secret_key.to_bytes(),
-            Err(e) => {
-                eprintln!("Warning: Failed to load/create persistent SSH keys: {e:#}");
-                eprintln!("Continuing with ephemeral keys...");
-            }
-        }
-        self
+        )?;
+        self.secret_key = secret_key.to_bytes();
+        Ok(self)
     }
 
     async fn build(&mut self) -> anyhow::Result<IrohSsh> {
