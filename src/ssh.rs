@@ -9,7 +9,7 @@ use regex::Regex;
 use std::sync::Arc;
 
 use iroh::{
-    Endpoint, EndpointId, RelayConfig, RelayUrl, SecretKey,
+    Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
     endpoint::{Connection, RelayMode},
     protocol::{ProtocolHandler, Router},
 };
@@ -17,6 +17,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
+
+const RELAY_TOKEN_ENV: &str = "IROH_RELAY_TOKEN";
 
 impl Builder {
     pub fn new() -> Self {
@@ -92,14 +94,11 @@ impl Builder {
             .address_lookup(DhtAddressLookup::builder())
             .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
-        if !self.relay_urls.is_empty() {
-            let relay_map = self.relay_urls.iter().cloned().collect();
-            builder = builder.relay_mode(RelayMode::Custom(relay_map));
-        } else if !self.extra_relay_urls.is_empty() {
-            let relay_map = RelayMode::Default.relay_map();
-            for url in &self.extra_relay_urls {
-                relay_map.insert(url.clone(), Arc::new(RelayConfig::from(url.clone())));
-            }
+        if let Some(relay_map) = custom_relay_map(
+            &self.relay_urls,
+            &self.extra_relay_urls,
+            relay_auth_token().as_deref(),
+        ) {
             builder = builder.relay_mode(RelayMode::Custom(relay_map));
         }
 
@@ -126,6 +125,40 @@ impl Builder {
         iroh_ssh.add_inner(endpoint, router);
 
         Ok(iroh_ssh)
+    }
+}
+
+fn relay_auth_token() -> Option<String> {
+    std::env::var(RELAY_TOKEN_ENV)
+        .ok()
+        .filter(|token| !token.is_empty())
+}
+
+/// Builds the relay map for the configured relays, or `None` to use the iroh
+/// defaults. The token only goes to the configured relays, never the defaults.
+fn custom_relay_map(
+    relay_urls: &[RelayUrl],
+    extra_relay_urls: &[RelayUrl],
+    token: Option<&str>,
+) -> Option<RelayMap> {
+    if !relay_urls.is_empty() {
+        let relay_map: RelayMap = relay_urls.iter().cloned().collect();
+        Some(match token {
+            Some(token) => relay_map.with_auth_token(token),
+            None => relay_map,
+        })
+    } else if !extra_relay_urls.is_empty() {
+        let relay_map = RelayMode::Default.relay_map();
+        for url in extra_relay_urls {
+            let mut config = RelayConfig::from(url.clone());
+            if let Some(token) = token {
+                config = config.with_auth_token(token);
+            }
+            relay_map.insert(url.clone(), Arc::new(config));
+        }
+        Some(relay_map)
+    } else {
+        None
     }
 }
 
@@ -307,5 +340,47 @@ pub fn dot_ssh(
         }
 
         Ok(secret_key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr as _;
+
+    fn url() -> RelayUrl {
+        RelayUrl::from_str("https://relay.example.com").unwrap()
+    }
+
+    #[test]
+    fn no_custom_relays_keeps_defaults() {
+        assert!(custom_relay_map(&[], &[], Some("secret")).is_none());
+    }
+
+    #[test]
+    fn relay_urls_get_the_token() {
+        let map = custom_relay_map(&[url()], &[], Some("secret")).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get(&url()).unwrap().auth_token.as_deref(),
+            Some("secret")
+        );
+    }
+
+    #[test]
+    fn extra_relay_urls_get_the_token_but_defaults_do_not() {
+        let map = custom_relay_map(&[], &[url()], Some("secret")).unwrap();
+        let relays: Vec<std::sync::Arc<RelayConfig>> = map.relays();
+        assert!(relays.len() > 1);
+        for relay in relays {
+            let expected = (relay.url == url()).then_some("secret");
+            assert_eq!(relay.auth_token.as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn no_token_leaves_relays_unauthenticated() {
+        let map = custom_relay_map(&[url()], &[], None).unwrap();
+        assert_eq!(map.get(&url()).unwrap().auth_token, None);
     }
 }

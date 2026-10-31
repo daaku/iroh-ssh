@@ -14,6 +14,21 @@ To connect an `iroh-ssh` client to a server using the `--relay-url <URL>` option
 > ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" my-user@110017f0d23788158e4d32c0e213ec38b95cf4e9a0a8cbcb10d6f9c578dd7863
 ``` 
 
+## Relay Authentication
+
+If your relay requires a token, set `IROH_RELAY_TOKEN` on both the server and the client. It is passed to `iroh-ssh server` and `iroh-ssh proxy`, and ssh hands its environment to the `ProxyCommand`:
+
+```bash
+> IROH_RELAY_TOKEN=<TOKEN> iroh-ssh server --relay-url <URL>
+```
+
+```bash
+> export IROH_RELAY_TOKEN=<TOKEN>
+> ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" my-user@110017f0d23788158e4d32c0e213ec38b95cf4e9a0a8cbcb10d6f9c578dd7863
+```
+
+The token is sent to the relays given with `--relay-url` or `--extra-relay-url`, never to the default relays. It is ignored if neither option is used. Use an `https://` relay so the token isn't sent in the clear.
+
 ## Setup Relay Server
 
 The easiest way is to use `n0-computers` own `iroh-relay` Docker image:
