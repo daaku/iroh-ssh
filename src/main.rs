@@ -97,17 +97,14 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
         format!("no ssh server on port {ssh_port}, please install one or set --ssh-port")
     })?;
 
-    let key_dir = if args.persist {
-        Some(match args.key_dir {
+    let secret_key = if args.persist {
+        let key_dir = match args.key_dir {
             Some(dir) => dir,
             None => my_home()?.context("home directory not found")?.join(".ssh"),
-        })
+        };
+        load_or_create_key(&key_dir)?
     } else {
-        None
-    };
-    let secret_key = match &key_dir {
-        Some(dir) => load_or_create_key(dir)?,
-        None => SecretKey::generate(),
+        SecretKey::generate()
     };
 
     let endpoint = bind_endpoint(secret_key, true, &args.relay).await?;
@@ -115,23 +112,7 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
         .accept(ALPN, SshForwarder { ssh_port })
         .spawn();
 
-    println!("Connect to this machine:");
-    println!(
-        "\n  ssh -o ProxyCommand=\"iroh-ssh proxy %h\" {}@{}\n",
-        whoami::username().unwrap_or("UNKNOWN_USER".to_string()),
-        endpoint.id()
-    );
-    match key_dir {
-        Some(dir) => println!("  (using persistent keys in {})", dir.display()),
-        None => println!(
-            "  warning: (using ephemeral keys, run 'iroh-ssh server --persist' to create persistent keys)"
-        ),
-    }
-    println!();
-    println!("client -> iroh-ssh -> direct connect -> iroh-ssh -> local ssh :{ssh_port}");
-
-    println!("Waiting for incoming connections...");
-    println!("Press Ctrl+C to exit");
+    println!("{}", endpoint.id());
     tokio::signal::ctrl_c().await?;
     router.shutdown().await?;
     Ok(())
@@ -278,7 +259,6 @@ impl SshForwarder {
 impl ProtocolHandler for SshForwarder {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote = connection.remote_id();
-        println!("Accepted connection from {remote}");
         if let Err(e) = self.forward(&connection).await {
             eprintln!("Connection from {remote} failed: {e:#}");
         }

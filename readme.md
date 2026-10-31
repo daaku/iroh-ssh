@@ -12,9 +12,7 @@
 # on server
 > iroh-ssh server --persist
 
-    Connect to this machine:
-
-    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
 
 # on client
@@ -107,17 +105,7 @@ Works through any firewall, NAT, or private network. No configuration needed.
 
 > iroh-ssh server --persist
 
-    Connect to this machine:
-
-    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
-
-    (using persistent keys in /home/my-user/.ssh/irohssh_ed25519)
-
-    Server listening for iroh connections...
-    client -> iroh-ssh -> direct connect -> iroh-ssh -> local ssh :22
-    Waiting for incoming connections...
-    Press Ctrl+C to exit
-
+    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 ```
 
 or use ephemeral keys
@@ -128,20 +116,10 @@ or use ephemeral keys
 
 > iroh-ssh server
 
-    Connect to this machine:
-
-    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
-
-    warning: (using ephemeral keys, run 'iroh-ssh server --persist' to create persistent keys)
-
-    client -> iroh-ssh -> direct connect -> iroh-ssh -> local ssh :22
-    Waiting for incoming connections...
-    Press Ctrl+C to exit
-    Server listening for iroh connections...
-
+    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 ```
 
-Display its Endpoint ID and share it to allow connection
+The server prints its Endpoint ID, share it to allow connections.
 
 ---
 

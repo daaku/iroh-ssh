@@ -179,7 +179,7 @@ jobs:
           
           echo "Waiting for server to be ready..."
           for i in {1..30}; do
-            if grep -q 'iroh-ssh.*@[a-f0-9]' server_output.txt 2>/dev/null; then
+            if grep -qE '^[a-f0-9]{64}$' server_output.txt 2>/dev/null; then
               echo "Server is ready"
               break
             fi
@@ -193,7 +193,7 @@ jobs:
           
           cat server_output.txt
           
-          CONNECTION_STRING=$(grep -oE '[^ ]+@[a-f0-9]{64}' server_output.txt | head -1 || true)
+          CONNECTION_STRING=$(grep -oE '^[a-f0-9]{64}$' server_output.txt | sed "s/^/$(id -un)@/" | head -1 || true)
           
           if [ -z "$CONNECTION_STRING" ]; then
             echo "ERROR: Could not extract connection string from server output"
@@ -262,7 +262,7 @@ jobs:
 
           echo "Waiting for server to be ready..."
           for i in {1..30}; do
-            if grep -q 'iroh-ssh.*@[a-f0-9]' exit_server_output.txt 2>/dev/null; then
+            if grep -qE '^[a-f0-9]{64}$' exit_server_output.txt 2>/dev/null; then
               echo "Server is ready"
               break
             fi
@@ -276,7 +276,7 @@ jobs:
 
           cat exit_server_output.txt
 
-          CONNECTION_STRING=$(grep -oE '[^ ]+@[a-f0-9]{64}' exit_server_output.txt | head -1 || true)
+          CONNECTION_STRING=$(grep -oE '^[a-f0-9]{64}$' exit_server_output.txt | sed "s/^/$(id -un)@/" | head -1 || true)
 
           if [ -z "$CONNECTION_STRING" ]; then
             echo "ERROR: Could not extract connection string from server output"
@@ -411,7 +411,7 @@ jobs:
           Write-Host "Server output:"
           Write-Host $ServerOutput
           
-          $ConnectionMatch = ($ServerOutput | Select-String -Pattern '([^\s]+@[a-f0-9]{64})').Matches
+          $ConnectionMatch = ($ServerOutput | Select-String -Pattern '([a-f0-9]{64})').Matches
           if ($ConnectionMatch.Count -eq 0) {
             Write-Host "ERROR: Could not extract connection string"
             Stop-Job -Job $ServerJob
@@ -419,7 +419,7 @@ jobs:
             exit 1
           }
           
-          $ConnectionString = $ConnectionMatch[0].Groups[1].Value
+          $ConnectionString = "$env:USERNAME@$($ConnectionMatch[0].Groups[1].Value)"
           Write-Host "Connection string: $ConnectionString"
           
           Write-Host "Attempting to connect..."
@@ -530,8 +530,8 @@ jobs:
             $ConnectionString = $null
             for ($i = 0; $i -lt 30; $i++) {
               $ServerOutput = (Receive-Job -Job $ServerJob -Keep 2>$null | Out-String)
-              if ($ServerOutput -match '([^\s]+@[a-f0-9]{64})') {
-                $ConnectionString = $Matches[1]
+              if ($ServerOutput -match '([a-f0-9]{64})') {
+                $ConnectionString = "$env:USERNAME@$($Matches[1])"
                 break
               }
               if ($ServerJob.State -in @('Completed', 'Failed', 'Stopped')) {
@@ -615,14 +615,14 @@ jobs:
           SERVER_DEFAULT_PID=$!
 
           for i in {1..30}; do
-            if grep -q 'iroh-ssh.*@[a-f0-9]' server_default_output.txt 2>/dev/null; then break; fi
+            if grep -qE '^[a-f0-9]{64}$' server_default_output.txt 2>/dev/null; then break; fi
             if ! kill -0 "$SERVER_DEFAULT_PID" 2>/dev/null; then
               echo "ERROR: Default server died"; cat server_default_output.txt; exit 1
             fi
             sleep 1
           done
 
-          DEFAULT_CONN=$(grep -oE '[^ ]+@[a-f0-9]{64}' server_default_output.txt | head -1)
+          DEFAULT_CONN=$(grep -oE '^[a-f0-9]{64}$' server_default_output.txt | sed "s/^/$(id -un)@/" | head -1)
           DEFAULT_ENDPOINT="${DEFAULT_CONN#*@}"
           echo "Default server endpoint: $DEFAULT_ENDPOINT"
 
@@ -632,14 +632,14 @@ jobs:
           SERVER_CUSTOM_PID=$!
 
           for i in {1..30}; do
-            if grep -q 'iroh-ssh.*@[a-f0-9]' server_custom_output.txt 2>/dev/null; then break; fi
+            if grep -qE '^[a-f0-9]{64}$' server_custom_output.txt 2>/dev/null; then break; fi
             if ! kill -0 "$SERVER_CUSTOM_PID" 2>/dev/null; then
               echo "ERROR: Custom key-dir server died"; cat server_custom_output.txt; exit 1
             fi
             sleep 1
           done
 
-          CUSTOM_CONN=$(grep -oE '[^ ]+@[a-f0-9]{64}' server_custom_output.txt | head -1)
+          CUSTOM_CONN=$(grep -oE '^[a-f0-9]{64}$' server_custom_output.txt | sed "s/^/$(id -un)@/" | head -1)
           CUSTOM_ENDPOINT="${CUSTOM_CONN#*@}"
           echo "Custom key-dir server endpoint: $CUSTOM_ENDPOINT"
 
@@ -739,8 +739,8 @@ jobs:
             $DefaultConn = $null
             for ($i = 0; $i -lt 30; $i++) {
               $Out = (Receive-Job -Job $ServerDefaultJob -Keep 2>$null | Out-String)
-              if ($Out -match '([^\s]+@[a-f0-9]{64})') {
-                $DefaultConn = $Matches[1]
+              if ($Out -match '([a-f0-9]{64})') {
+                $DefaultConn = "$env:USERNAME@$($Matches[1])"
                 break
               }
               if ($ServerDefaultJob.State -in @('Completed', 'Failed', 'Stopped')) { break }
@@ -764,8 +764,8 @@ jobs:
             $CustomConn = $null
             for ($i = 0; $i -lt 30; $i++) {
               $Out = (Receive-Job -Job $ServerCustomJob -Keep 2>$null | Out-String)
-              if ($Out -match '([^\s]+@[a-f0-9]{64})') {
-                $CustomConn = $Matches[1]
+              if ($Out -match '([a-f0-9]{64})') {
+                $CustomConn = "$env:USERNAME@$($Matches[1])"
                 break
               }
               if ($ServerCustomJob.State -in @('Completed', 'Failed', 'Stopped')) { break }
