@@ -11,7 +11,7 @@ To connect an `iroh-ssh` client to a server using the `--relay-url <URL>` option
 ```
 
 ```bash
-> iroh-ssh my-user@110017f0d23788158e4d32c0e213ec38b95cf4e9a0a8cbcb10d6f9c578dd7863 --relay-url <URL>
+> ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" my-user@110017f0d23788158e4d32c0e213ec38b95cf4e9a0a8cbcb10d6f9c578dd7863
 ``` 
 
 ## Setup Relay Server

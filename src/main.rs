@@ -1,71 +1,12 @@
 use clap::Parser;
-use iroh_ssh::{Cli, Cmd, ConnectArgs, ServiceCmd, api};
-
-#[cfg(not(target_os = "windows"))]
-use anyhow::bail;
+use iroh_ssh::{Cli, Cmd, api};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
-        Some(Cmd::Connect(args)) => api::client_mode(args).await,
-        Some(Cmd::Exec(args)) => {
-            let conn_args = ConnectArgs {
-                ssh: args.ssh,
-                remote_cmd: args.remote_cmd,
-                target: args.target,
-                relay_url: args.relay_url,
-                extra_relay_url: args.extra_relay_url,
-            };
-            api::client_mode(conn_args).await
-        }
-        Some(Cmd::Server(args)) => api::server_mode(args, false).await,
-        Some(Cmd::Service { op }) => {
-            if !self_runas::is_elevated() {
-                self_runas::admin()?;
-                return Ok(());
-            } else {
-                match op {
-                    ServiceCmd::Install {
-                        ssh_port,
-                        key_dir,
-                        relay_url,
-                        extra_relay_url,
-                    } => api::service::install(ssh_port, key_dir, relay_url, extra_relay_url).await,
-                    ServiceCmd::Uninstall => api::service::uninstall().await,
-                }
-            }
-        }
-        Some(Cmd::Info(args)) => api::info_mode(args.key_dir).await,
-        Some(Cmd::Version) => {
-            println!("iroh-ssh version {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        Some(Cmd::Proxy(args)) => api::proxy_mode(args).await,
-        #[cfg(target_os = "windows")]
-        Some(Cmd::RunService(args)) => {
-            iroh_ssh::run_service(
-                args.ssh_port,
-                args.key_dir,
-                args.relay_url,
-                args.extra_relay_url,
-            )
-            .await
-        }
-        #[cfg(not(target_os = "windows"))]
-        Some(Cmd::RunService(_)) => {
-            bail!("service runtime is only available on windows");
-        }
-        None => {
-            let conn_args = ConnectArgs {
-                ssh: cli.ssh,
-                remote_cmd: cli.remote_cmd.unwrap_or_default(),
-                target: cli.target.unwrap_or_default(),
-                relay_url: cli.relay_url,
-                extra_relay_url: cli.extra_relay_url,
-            };
-            api::client_mode(conn_args).await
-        }
+        Cmd::Server(args) => api::server_mode(args).await,
+        Cmd::Proxy(args) => api::proxy_mode(args).await,
     }
 }

@@ -1,5 +1,4 @@
 mod cli;
-mod service;
 mod ssh;
 
 use std::path::PathBuf;
@@ -10,9 +9,6 @@ use iroh::{Endpoint, RelayUrl, protocol::Router};
 pub mod api;
 
 pub use cli::*;
-pub use service::Service;
-pub use service::ServiceParams;
-pub use service::{install_service, run_service, uninstall_service};
 pub use ssh::dot_ssh;
 
 #[derive(Debug, Clone)]

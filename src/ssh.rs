@@ -1,5 +1,5 @@
-use crate::{Builder, Inner, IrohSsh, cli::SshOpts};
-use std::{ffi::OsString, io, path::Path, process::Stdio, time::Duration};
+use crate::{Builder, Inner, IrohSsh};
+use std::{path::Path, time::Duration};
 
 use anyhow::bail;
 use ed25519_dalek::SECRET_KEY_LENGTH;
@@ -16,7 +16,6 @@ use iroh::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    process::{Child, Command},
 };
 
 impl Builder {
@@ -61,17 +60,9 @@ impl Builder {
         self
     }
 
-    pub fn dot_ssh_integration(mut self, persist: bool, service: bool) -> Self {
-        tracing::info!(
-            "dot_ssh_integration: persist={}, service={}",
-            persist,
-            service
-        );
-
+    pub fn dot_ssh_integration(mut self) -> Self {
         match dot_ssh(
             &SecretKey::from_bytes(&self.secret_key),
-            persist,
-            service,
             self.key_dir.as_deref(),
         ) {
             Ok(secret_key) => {
@@ -179,33 +170,6 @@ impl IrohSsh {
         self.inner = Some(Inner { endpoint, router });
     }
 
-    pub async fn start_ssh(
-        &self,
-        target: String,
-        ssh_opts: SshOpts,
-        remote_cmd: Vec<OsString>,
-        relay_urls: &[String],
-        extra_relay_urls: &[String],
-    ) -> io::Result<Child> {
-        let c_exe = std::env::current_exe()?;
-        let mut cmd = build_ssh_command(
-            &c_exe,
-            target,
-            ssh_opts,
-            remote_cmd,
-            relay_urls,
-            extra_relay_urls,
-        );
-
-        let ssh_process = cmd
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-
-        Ok(ssh_process)
-    }
-
     pub async fn connect_pubkey(&self, endpoint_id: EndpointId) -> anyhow::Result<()> {
         let inner = self.inner.as_ref().expect("inner not set");
         let conn = inner
@@ -243,80 +207,6 @@ impl IrohSsh {
     pub fn endpoint_id(&self) -> EndpointId {
         self.inner.as_ref().expect("inner not set").endpoint.id()
     }
-}
-
-fn build_ssh_command(
-    iroh_ssh_exe: &Path,
-    target: String,
-    ssh_opts: SshOpts,
-    remote_cmd: Vec<OsString>,
-    relay_urls: &[String],
-    extra_relay_urls: &[String],
-) -> Command {
-    let mut cmd = Command::new("ssh");
-
-    let mut proxy_cmd = format!("{} proxy", iroh_ssh_exe.display());
-    for url in relay_urls {
-        proxy_cmd.push_str(&format!(" --relay-url {url}"));
-    }
-    for url in extra_relay_urls {
-        proxy_cmd.push_str(&format!(" --extra-relay-url {url}"));
-    }
-    proxy_cmd.push_str(" %h:%p");
-    cmd.arg("-o").arg(format!("ProxyCommand={proxy_cmd}"));
-
-    if let Some(p) = ssh_opts.port {
-        cmd.arg("-p").arg(p.to_string());
-    }
-    if let Some(u) = &ssh_opts.login_user {
-        cmd.arg("-l").arg(u);
-    }
-    if let Some(id) = &ssh_opts.identity_file {
-        cmd.arg("-i").arg(id);
-    }
-    for l in &ssh_opts.local_forward {
-        cmd.arg("-L").arg(l);
-    }
-    for r in &ssh_opts.remote_forward {
-        cmd.arg("-R").arg(r);
-    }
-    for o in &ssh_opts.options {
-        cmd.arg("-o").arg(o);
-    }
-    if ssh_opts.agent {
-        cmd.arg("-A");
-    }
-    if ssh_opts.no_agent {
-        cmd.arg("-a");
-    }
-    if ssh_opts.x11_trusted {
-        cmd.arg("-Y");
-    } else if ssh_opts.x11 {
-        cmd.arg("-X");
-    }
-    if ssh_opts.no_cmd {
-        cmd.arg("-N");
-    }
-    if ssh_opts.force_tty {
-        cmd.arg("-t");
-    }
-    if ssh_opts.no_tty {
-        cmd.arg("-T");
-    }
-    for _ in 0..ssh_opts.verbose {
-        cmd.arg("-v");
-    }
-    if ssh_opts.quiet {
-        cmd.arg("-q");
-    }
-
-    cmd.arg(target);
-
-    if !remote_cmd.is_empty() {
-        cmd.args(remote_cmd.iter());
-    }
-
-    cmd
 }
 
 impl ProtocolHandler for IrohSsh {
@@ -362,47 +252,16 @@ impl ProtocolHandler for IrohSsh {
 
 pub fn dot_ssh(
     default_secret_key: &SecretKey,
-    persist: bool,
-    _service: bool,
     key_dir: Option<&Path>,
 ) -> anyhow::Result<SecretKey> {
-    tracing::info!(
-        "dot_ssh: Function called, persist={}, service={}, key_dir={:?}",
-        persist,
-        _service,
-        key_dir,
-    );
+    tracing::info!("dot_ssh: Function called, key_dir={:?}", key_dir);
 
-    #[allow(unused_mut)]
-    let mut ssh_dir = if let Some(dir) = key_dir {
+    let ssh_dir = if let Some(dir) = key_dir {
         dir.to_path_buf()
     } else {
         let distro_home = my_home()?.ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
         distro_home.join(".ssh")
     };
-
-    // Only apply service-specific overrides when no explicit key_dir is set
-    if key_dir.is_none() {
-        // For now linux services are installed as "sudo'er" so
-        // we need to use the root .ssh directory
-        #[cfg(target_os = "linux")]
-        if _service {
-            ssh_dir = std::path::PathBuf::from("/root/.ssh");
-        }
-
-        // Windows virtual service account profile location for NT SERVICE\iroh-ssh
-        #[cfg(target_os = "windows")]
-        if _service {
-            ssh_dir = std::path::PathBuf::from(crate::service::WindowsService::SERVICE_SSH_DIR);
-            tracing::info!("dot_ssh: Using service SSH dir: {}", ssh_dir.display());
-
-            // Ensure directory exists when running as service
-            if !ssh_dir.exists() {
-                tracing::info!("dot_ssh: Service SSH dir doesn't exist, creating it");
-                std::fs::create_dir_all(&ssh_dir)?;
-            }
-        }
-    }
 
     let pub_key = ssh_dir.join("irohssh_ed25519.pub");
     let priv_key = ssh_dir.join("irohssh_ed25519");
@@ -411,180 +270,57 @@ pub fn dot_ssh(
     tracing::debug!("dot_ssh: pub_key path = {}", pub_key.display());
     tracing::debug!("dot_ssh: priv_key path = {}", priv_key.display());
 
-    match (ssh_dir.exists(), persist) {
-        (false, false) => {
-            tracing::error!(
-                "dot_ssh: ssh_dir does not exist and persist=false: {}",
-                ssh_dir.display()
-            );
-            bail!(
-                "key directory {} does not exist, use --persist flag to create it",
-                ssh_dir.display()
-            )
+    if !ssh_dir.exists() {
+        tracing::info!("dot_ssh: Creating ssh_dir: {}", ssh_dir.display());
+        std::fs::create_dir_all(&ssh_dir)?;
+        println!("[INFO] created .ssh folder: {}", ssh_dir.display());
+    }
+
+    // check pub and priv key already exists
+    if pub_key.exists() && priv_key.exists() {
+        tracing::info!("dot_ssh: Keys exist, reading them");
+        // read secret key
+        if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
+            let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
+            sk_bytes.copy_from_slice(z32::decode(secret_key.as_slice())?.as_slice());
+            Ok(SecretKey::from_bytes(&sk_bytes))
+        } else {
+            bail!("failed to read secret key from {}", priv_key.display())
         }
-        (false, true) => {
-            tracing::info!("dot_ssh: Creating ssh_dir: {}", ssh_dir.display());
-            std::fs::create_dir_all(&ssh_dir)?;
-            println!("[INFO] created .ssh folder: {}", ssh_dir.display());
-            dot_ssh(default_secret_key, persist, _service, key_dir)
-        }
-        (true, true) => {
-            tracing::info!("dot_ssh: Branch (true, true) - directory exists, persist enabled");
-            tracing::debug!("dot_ssh: pub_key.exists() = {}", pub_key.exists());
-            tracing::debug!("dot_ssh: priv_key.exists() = {}", priv_key.exists());
+    } else {
+        tracing::info!("dot_ssh: Keys don't exist, creating new keys");
 
-            // check pub and priv key already exists
-            if pub_key.exists() && priv_key.exists() {
-                tracing::info!("dot_ssh: Keys exist, reading them");
-                // read secret key
-                if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
-                    let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
-                    sk_bytes.copy_from_slice(z32::decode(secret_key.as_slice())?.as_slice());
-                    Ok(SecretKey::from_bytes(&sk_bytes))
-                } else {
-                    bail!("failed to read secret key from {}", priv_key.display())
-                }
-            } else {
-                tracing::info!("dot_ssh: Keys don't exist, creating new keys");
-                tracing::debug!("dot_ssh: Writing to pub_key: {}", pub_key.display());
-                tracing::debug!("dot_ssh: Writing to priv_key: {}", priv_key.display());
+        let secret_key = default_secret_key.clone();
+        let public_key = secret_key.public();
 
-                let secret_key = default_secret_key.clone();
-                let public_key = secret_key.public();
-
-                match std::fs::write(&pub_key, z32::encode(public_key.as_bytes())) {
-                    Ok(_) => {
-                        tracing::info!("dot_ssh: Successfully wrote pub_key");
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "dot_ssh: Failed to write pub_key: {} (error kind: {:?})",
-                            e,
-                            e.kind()
-                        );
-                        return Err(e.into());
-                    }
-                }
-
-                match std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes())) {
-                    Ok(_) => {
-                        tracing::info!("dot_ssh: Successfully wrote priv_key");
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "dot_ssh: Failed to write priv_key: {} (error kind: {:?})",
-                            e,
-                            e.kind()
-                        );
-                        return Err(e.into());
-                    }
-                }
-
-                Ok(secret_key)
+        match std::fs::write(&pub_key, z32::encode(public_key.as_bytes())) {
+            Ok(_) => {
+                tracing::info!("dot_ssh: Successfully wrote pub_key");
+            }
+            Err(e) => {
+                tracing::error!(
+                    "dot_ssh: Failed to write pub_key: {} (error kind: {:?})",
+                    e,
+                    e.kind()
+                );
+                return Err(e.into());
             }
         }
-        (true, false) => {
-            // check pub and priv key already exists
-            if pub_key.exists() && priv_key.exists() {
-                // read secret key
-                if let Ok(secret_key) = std::fs::read(priv_key.clone()) {
-                    let mut sk_bytes = [0u8; SECRET_KEY_LENGTH];
-                    sk_bytes.copy_from_slice(z32::decode(secret_key.as_slice())?.as_slice());
-                    return Ok(SecretKey::from_bytes(&sk_bytes));
-                }
+
+        match std::fs::write(&priv_key, z32::encode(&secret_key.to_bytes())) {
+            Ok(_) => {
+                tracing::info!("dot_ssh: Successfully wrote priv_key");
             }
-            bail!(
-                "no iroh-ssh keys found in {}, use --persist flag to create it",
-                ssh_dir.display()
-            )
+            Err(e) => {
+                tracing::error!(
+                    "dot_ssh: Failed to write priv_key: {} (error kind: {:?})",
+                    e,
+                    e.kind()
+                );
+                return Err(e.into());
+            }
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    fn args_of(cmd: &Command) -> Vec<String> {
-        cmd.as_std()
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn login_user_flag_is_passed_to_ssh() {
-        let opts = SshOpts {
-            login_user: Some("alice".to_string()),
-            ..Default::default()
-        };
-
-        let cmd = build_ssh_command(
-            Path::new("/usr/bin/iroh-ssh"),
-            "endpoint123".to_string(),
-            opts,
-            Vec::new(),
-            &[],
-            &[],
-        );
-
-        let args = args_of(&cmd);
-        let l_pos = args.iter().position(|a| a == "-l").expect("-l not found");
-        assert_eq!(args[l_pos + 1], "alice");
-    }
-
-    #[test]
-    fn rsync_invocation_parses_and_builds() {
-        // Mirrors `rsync -e iroh-ssh /local user@<id>:/remote`, which invokes:
-        //   iroh-ssh -l alice <endpoint_id> rsync --server -e.LsfxCIvu . /tmp/dest
-        let cli = crate::cli::Cli::try_parse_from([
-            "iroh-ssh",
-            "-l",
-            "alice",
-            "endpoint123",
-            "rsync",
-            "--server",
-            "-e.LsfxCIvu",
-            ".",
-            "/tmp/dest",
-        ])
-        .expect("CLI should accept rsync's invocation pattern");
-
-        assert_eq!(cli.target.as_deref(), Some("endpoint123"));
-        assert_eq!(cli.ssh.login_user.as_deref(), Some("alice"));
-        let remote_cmd_raw = cli.remote_cmd.unwrap_or_default();
-        let remote_cmd: Vec<String> = remote_cmd_raw
-            .iter()
-            .map(|o| o.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            remote_cmd,
-            vec!["rsync", "--server", "-e.LsfxCIvu", ".", "/tmp/dest"]
-        );
-
-        let cmd = build_ssh_command(
-            Path::new("/usr/bin/iroh-ssh"),
-            cli.target.unwrap(),
-            cli.ssh,
-            remote_cmd_raw,
-            &[],
-            &[],
-        );
-        let args = args_of(&cmd);
-
-        // -l alice should appear before the host arg
-        let host_pos = args
-            .iter()
-            .position(|a| a == "endpoint123")
-            .expect("host arg not found");
-        let l_pos = args.iter().position(|a| a == "-l").expect("-l not found");
-        assert!(l_pos < host_pos);
-        assert_eq!(args[l_pos + 1], "alice");
-
-        // remote command should follow the host
-        assert_eq!(args[host_pos + 1], "rsync");
-        assert_eq!(args[host_pos + 2], "--server");
-        assert_eq!(args[host_pos + 3], "-e.LsfxCIvu");
+        Ok(secret_key)
     }
 }

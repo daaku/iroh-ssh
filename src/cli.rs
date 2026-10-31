@@ -1,50 +1,22 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
-const TARGET_HELP: &str = "Target in the form user@ENDPOINT_ID";
 const RELAY_URL_HELP: &str = "Use only these relay servers, replacing the defaults (repeatable)";
 const EXTRA_RELAY_URL_HELP: &str = "Add relay servers alongside the defaults (repeatable)";
 const KEY_DIR_HELP: &str = "Directory for iroh-ssh identity keys (default: ~/.ssh)";
 
 #[derive(Parser, Debug)]
-#[command(name = "iroh-ssh", about = "ssh without ip")]
+#[command(name = "iroh-ssh", about = "ssh without ip", version)]
 pub struct Cli {
     #[command(subcommand)]
-    pub cmd: Option<Cmd>,
-
-    #[arg(help = TARGET_HELP)]
-    pub target: Option<String>,
-
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    pub relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    pub extra_relay_url: Vec<String>,
-
-    #[command(flatten)]
-    pub ssh: SshOpts,
-
-    #[arg(trailing_var_arg = true)]
-    pub remote_cmd: Option<Vec<OsString>>,
+    pub cmd: Cmd,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    Connect(ConnectArgs),
-    #[command(hide = true)]
-    Exec(ExecArgs),
     Server(ServerArgs),
-    Service {
-        #[command(subcommand)]
-        op: ServiceCmd,
-    },
-    Info(InfoArgs),
-    #[command(hide = true)]
     Proxy(ProxyArgs),
-    #[command(hide = true)]
-    RunService(ServiceArgs),
-    Version,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -57,108 +29,6 @@ pub struct ProxyArgs {
 
     #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
     pub extra_relay_url: Vec<String>,
-}
-
-#[derive(Args, Clone, Debug)]
-pub struct ConnectArgs {
-    #[arg(help = TARGET_HELP)]
-    pub target: String,
-
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    pub relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    pub extra_relay_url: Vec<String>,
-
-    #[command(flatten)]
-    pub ssh: SshOpts,
-
-    #[arg(trailing_var_arg = true)]
-    pub remote_cmd: Vec<OsString>,
-}
-
-#[derive(Args, Clone, Debug)]
-pub struct ExecArgs {
-    #[arg(help = TARGET_HELP)]
-    pub target: String,
-
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    pub relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    pub extra_relay_url: Vec<String>,
-
-    #[command(flatten)]
-    pub ssh: SshOpts,
-
-    #[arg(trailing_var_arg = true, required = true)]
-    pub remote_cmd: Vec<OsString>,
-}
-
-#[derive(Args, Clone, Default, Debug)]
-pub struct SshOpts {
-    #[arg(
-        short = 'i',
-        long,
-        value_name = "PATH",
-        help = "Identity file for publickey auth"
-    )]
-    pub identity_file: Option<PathBuf>,
-
-    #[arg(short = 'L', value_name = "LPORT:HOST:RPORT",
-        help = "Local forward [bind_addr:]lport:host:rport (host can't be endpoint_id yet)", action = ArgAction::Append)]
-    pub local_forward: Vec<String>,
-
-    #[arg(short = 'R', value_name = "RPORT:HOST:LPORT",
-        help = "Remote forward [bind_addr:]rport:host:lport  (host can't be endpoint_id yet)", action = ArgAction::Append)]
-    pub remote_forward: Vec<String>,
-
-    #[arg(
-        short = 'p',
-        long,
-        value_name = "PORT",
-        help = "Remote sshd port (default 22)"
-    )]
-    pub port: Option<u16>,
-
-    #[arg(
-        short = 'l',
-        value_name = "USER",
-        help = "Login user (lets rsync's `-l user host cmd` invocation work)"
-    )]
-    pub login_user: Option<String>,
-
-    #[arg(short = 'o', value_name = "KEY=VALUE",
-        help = "Pass an ssh option (repeatable)", action = ArgAction::Append)]
-    pub options: Vec<String>,
-
-    #[arg(short = 'A', help = "Enable agent forwarding", action = ArgAction::SetTrue)]
-    pub agent: bool,
-
-    #[arg(short = 'a', help = "Disable agent forwarding", action = ArgAction::SetTrue)]
-    pub no_agent: bool,
-
-    #[arg(short = 'X', help = "Enable X11 forwarding", action = ArgAction::SetTrue)]
-    pub x11: bool,
-
-    #[arg(short = 'Y', help = "Enable trusted X11 forwarding", action = ArgAction::SetTrue)]
-    pub x11_trusted: bool,
-
-    #[arg(short = 'N', help = "Do not execute remote command", action = ArgAction::SetTrue)]
-    pub no_cmd: bool,
-
-    #[arg(short = 't', help = "Force pseudo-terminal", action = ArgAction::SetTrue)]
-    pub force_tty: bool,
-
-    #[arg(short = 'T', help = "Disable pseudo-terminal", action = ArgAction::SetTrue)]
-    pub no_tty: bool,
-
-    #[arg(short = 'v', help = "Increase verbosity",
-        action = ArgAction::Count)]
-    pub verbose: u8,
-
-    #[arg(short = 'q', help = "Quiet mode", action = ArgAction::SetTrue)]
-    pub quiet: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -179,41 +49,26 @@ pub struct ServerArgs {
     pub extra_relay_url: Vec<String>,
 }
 
-#[derive(Args, Clone, Debug)]
-pub struct InfoArgs {
-    #[arg(long, value_name = "DIR", help = KEY_DIR_HELP)]
-    pub key_dir: Option<PathBuf>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Subcommand, Clone, Debug)]
-pub enum ServiceCmd {
-    Install {
-        #[arg(long, default_value = "22")]
-        ssh_port: u16,
+    #[test]
+    fn only_server_and_proxy_are_accepted() {
+        assert!(Cli::try_parse_from(["iroh-ssh", "server"]).is_ok());
+        assert!(Cli::try_parse_from(["iroh-ssh", "proxy", "abc"]).is_ok());
 
-        #[arg(long, value_name = "DIR", help = KEY_DIR_HELP)]
-        key_dir: Option<PathBuf>,
-
-        #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-        relay_url: Vec<String>,
-
-        #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-        extra_relay_url: Vec<String>,
-    },
-    Uninstall,
-}
-
-#[derive(Args, Clone, Debug)]
-pub struct ServiceArgs {
-    #[arg(long, default_value = "22")]
-    pub ssh_port: u16,
-
-    #[arg(long, value_name = "DIR", help = KEY_DIR_HELP)]
-    pub key_dir: Option<PathBuf>,
-
-    #[arg(long, value_name = "URL", help = RELAY_URL_HELP, action = ArgAction::Append)]
-    pub relay_url: Vec<String>,
-
-    #[arg(long, value_name = "URL", help = EXTRA_RELAY_URL_HELP, action = ArgAction::Append)]
-    pub extra_relay_url: Vec<String>,
+        for args in [
+            vec!["iroh-ssh"],
+            vec!["iroh-ssh", "user@abc"],
+            vec!["iroh-ssh", "connect", "user@abc"],
+            vec!["iroh-ssh", "exec", "user@abc", "ls"],
+            vec!["iroh-ssh", "info"],
+            vec!["iroh-ssh", "service", "uninstall"],
+            vec!["iroh-ssh", "run-service"],
+            vec!["iroh-ssh", "version"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+        }
+    }
 }

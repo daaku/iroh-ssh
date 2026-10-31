@@ -15,13 +15,13 @@
 
     Connect to this this machine:
 
-    iroh-ssh my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
 
 # on client
-> iroh-ssh user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+> ssh -o ProxyCommand="iroh-ssh proxy %h" user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 # or with certificate
-> iroh-ssh -i ~/.ssh/id_rsa_my_cert my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+> ssh -o ProxyCommand="iroh-ssh proxy %h" -i ~/.ssh/id_rsa_my_cert my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 ```
 
 **That's all it takes.** (requires ssh/(an ssh server) to be installed)
@@ -87,13 +87,16 @@ Verify that the installation was successful
 ```bash
 # Install for your distro (see above)
 # Connect from anywhere
-> iroh-ssh my-user@38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
+> ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
+
+# or in ~/.ssh/config, then `ssh my-server`
+Host my-server
+    HostName 38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
+    User my-user
+    ProxyCommand iroh-ssh proxy %h
 ```
 
 Works through any firewall, NAT, or private network. No configuration needed.
-
-![Connecting to remote server](/media/t-rec_connect.gif)
-<br>
 
 ---
 
@@ -101,13 +104,13 @@ Works through any firewall, NAT, or private network. No configuration needed.
 
 ```bash
 # Install for your distro (see above)
-# (use with tmux or install as service on linux)
+# (use with tmux)
 
 > iroh-ssh server --persist
 
     Connect to this this machine:
 
-    iroh-ssh my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
     (using persistent keys in /home/my-user/.ssh/irohssh_ed25519)
 
@@ -122,13 +125,13 @@ or use ephemeral keys
 
 ```bash
 # Install for your distro (see above)
-# (use with tmux or install as service on linux)
+# (use with tmux)
 
 > iroh-ssh server
 
     Connect to this this machine:
 
-    iroh-ssh my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+    ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
 
     warning: (using ephemeral keys, run 'iroh-ssh server --persist' to create persistent keys)
 
@@ -140,25 +143,6 @@ or use ephemeral keys
 ```
 
 Display its Endpoint ID and share it to allow connection
-
-![Starting server/Installing as service](/media/t-rec_server_service.gif)
-<br>
-
-## Connection information
-```bash
-// note: works only with persistent keys
-> iroh-ssh info
-
-    Your iroh-ssh endpoint id: 38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
-    iroh-ssh version 0.2.12
-    https://github.com/rustonbsd/iroh-ssh
-
-    Your server iroh-ssh endpoint id:
-      iroh-ssh my-user@38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
-
-    Your service iroh-ssh endpoint id:
-      iroh-ssh my-user@4fjeeiui4jdm96005255c3begj389xk3aeaeef6cfebd88344aa8c85e1dbfc1ad
-```
 
 ---
 
@@ -197,21 +181,13 @@ Display its Endpoint ID and share it to allow connection
 ## Commands
 
 ```bash
-# Get your Endpoint ID and info
-> iroh-ssh info
-
 # Server modes
 > iroh-ssh server --persist          # Interactive mode, e.g. use tmux (default SSH port 22)
 > iroh-ssh server --ssh-port 2222    # Custom SSH port (using ephemeral keys)
 
-# Service mode
-> iroh-ssh service install                   # Background daemon (linux and windows only, default port 22)
-> iroh-ssh service install --ssh-port 2222   # Background daemon with custom SSH port
-> iroh-ssh service uninstall                 # Uninstall service
-
 # Client connection
-> iroh-ssh user@<ENDPOINT_ID>                    # Connect to remote server
-> iroh-ssh connect user@<ENDPOINT_ID>            # Explicit connect command, works with all standard ssh params and flags
+> ssh -o ProxyCommand="iroh-ssh proxy %h" user@<ENDPOINT_ID>                 # Connect to a remote server
+> ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" user@<ENDPOINT_ID>   # Set relay options on the proxy
 ```
 
 ## Security Model
@@ -225,12 +201,7 @@ Display its Endpoint ID and share it to allow connection
 
 - [x] Password authentication
 - [x] Persistent SSH keys
-- [x] Linux service mode
-- [x] Add howto gifs
 - [x] Add -p flag for persistence
-- [x] Windows service mode
-- [x] (almost) all ssh commands supported
-- [ ] MacOS service mode
 
 ## Custom Relay Setup
 

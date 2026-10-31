@@ -1,13 +1,11 @@
-use std::{path::PathBuf, process::ExitStatus, str::FromStr as _};
+use std::str::FromStr as _;
 
-use anyhow::bail;
 use homedir::my_home;
-use iroh::{EndpointId, RelayUrl, SecretKey};
+use iroh::{EndpointId, RelayUrl};
 
 use crate::{
     IrohSsh,
-    cli::{ConnectArgs, ProxyArgs, ServerArgs},
-    dot_ssh,
+    cli::{ProxyArgs, ServerArgs},
 };
 
 fn parse_relay_urls(urls: &[String]) -> anyhow::Result<Vec<RelayUrl>> {
@@ -16,103 +14,7 @@ fn parse_relay_urls(urls: &[String]) -> anyhow::Result<Vec<RelayUrl>> {
         .collect()
 }
 
-pub async fn info_mode(key_dir: Option<PathBuf>) -> anyhow::Result<()> {
-    let server_key = dot_ssh(
-        &SecretKey::generate(),
-        false,
-        false,
-        key_dir.as_deref(),
-    )
-    .ok();
-    let service_key = dot_ssh(
-        &SecretKey::generate(),
-        false,
-        true,
-        key_dir.as_deref(),
-    )
-    .ok();
-
-    if server_key.is_none() && service_key.is_none() {
-        println!(
-            "No keys found, run for server or service:\n  'iroh-ssh server --persist' or '-p' to create it"
-        );
-        println!();
-        println!("(if an iroh-ssh instance is currently running, it is using ephemeral keys)");
-        bail!("No keys found")
-    }
-
-    println!("iroh-ssh version {}", env!("CARGO_PKG_VERSION"));
-    println!("https://github.com/rustonbsd/iroh-ssh");
-    println!();
-
-    if server_key.is_none() && service_key.is_none() {
-        println!("run 'iroh-ssh server --persist' to start the server with persistent keys");
-        println!("run 'iroh-ssh server' to start the server with ephemeral keys");
-        println!(
-            "run 'iroh-ssh service install' to copy the binary, install the service and start the server (always uses persistent keys)"
-        );
-    }
-
-    if let Some(key) = server_key {
-        println!();
-        println!("Your server iroh-ssh endpoint id:");
-        println!(
-            "  iroh-ssh {}@{}",
-            whoami::username().unwrap_or("UNKNOWN_USER".to_string()),
-            key.clone().public()
-        );
-        println!();
-    }
-
-    if let Some(key) = service_key {
-        println!();
-        println!("Your service iroh-ssh endpoint id:");
-        println!(
-            "  iroh-ssh {}@{}",
-            whoami::username().unwrap_or("UNKNOWN_USER".to_string()),
-            key.clone().public()
-        );
-        println!();
-    }
-
-    Ok(())
-}
-
-pub mod service {
-    use std::path::PathBuf;
-
-    use crate::{ServiceParams, api::abs_key_dir, install_service, uninstall_service};
-
-    pub async fn install(
-        ssh_port: u16,
-        key_dir: Option<PathBuf>,
-        relay_url: Vec<String>,
-        extra_relay_url: Vec<String>,
-    ) -> anyhow::Result<()> {
-        if install_service(ServiceParams {
-            ssh_port,
-            key_dir: abs_key_dir(key_dir),
-            relay_url,
-            extra_relay_url,
-        })
-        .await
-        .is_err()
-        {
-            anyhow::bail!("service install is only supported on linux and windows");
-        }
-        Ok(())
-    }
-
-    pub async fn uninstall() -> anyhow::Result<()> {
-        if uninstall_service().await.is_err() {
-            println!("service uninstall is only supported on linux or windows");
-            anyhow::bail!("service uninstall is only supported on linux or windows");
-        }
-        Ok(())
-    }
-}
-
-pub async fn server_mode(server_args: ServerArgs, service: bool) -> anyhow::Result<()> {
+pub async fn server_mode(server_args: ServerArgs) -> anyhow::Result<()> {
     let mut iroh_ssh_builder = IrohSsh::builder()
         .accept_incoming(true)
         .accept_port(server_args.ssh_port)
@@ -120,13 +22,13 @@ pub async fn server_mode(server_args: ServerArgs, service: bool) -> anyhow::Resu
         .relay_urls(parse_relay_urls(&server_args.relay_url)?)
         .extra_relay_urls(parse_relay_urls(&server_args.extra_relay_url)?);
     if server_args.persist {
-        iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration(true, service);
+        iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration();
     }
     let iroh_ssh = iroh_ssh_builder.build().await?;
 
     println!("Connect to this this machine:");
     println!(
-        "\n  iroh-ssh {}@{}\n",
+        "\n  ssh -o ProxyCommand=\"iroh-ssh proxy %h\" {}@{}\n",
         whoami::username().unwrap_or("UNKNOWN_USER".to_string()),
         iroh_ssh.endpoint_id()
     );
@@ -176,81 +78,4 @@ pub async fn proxy_mode(proxy_args: ProxyArgs) -> anyhow::Result<()> {
         // fallback to dns base (or ip) HostName connection (no iroh)
         iroh_ssh.connect_tcpip(&proxy_args.endpoint_id).await
     }
-}
-
-pub async fn client_mode(connect_args: ConnectArgs) -> anyhow::Result<()> {
-    let iroh_ssh = IrohSsh::builder()
-        .accept_incoming(false)
-        .relay_urls(parse_relay_urls(&connect_args.relay_url)?)
-        .extra_relay_urls(parse_relay_urls(&connect_args.extra_relay_url)?)
-        .build()
-        .await?;
-    let mut ssh_process = match iroh_ssh
-        .start_ssh(
-            connect_args.target,
-            connect_args.ssh,
-            connect_args.remote_cmd,
-            &connect_args.relay_url,
-            &connect_args.extra_relay_url,
-        )
-        .await
-    {
-        Ok(child) => child,
-        Err(err) => match err.kind() {
-            std::io::ErrorKind::NotFound => {
-                eprintln!(
-                    "SSH command not found, please make sure your system has an SSH client installed and and that the exact cmd \"ssh\" is in your PATH"
-                );
-                std::process::exit(1);
-            }
-            _ => {
-                eprintln!("Unknown failure when calling the SSH client: {err}");
-                std::process::exit(1);
-            }
-        },
-    };
-
-    let status = ssh_process.wait().await?;
-
-    // this kills the process (ok is just here for no compile errors)
-    exit_with_code(status);
-
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(crate) fn exit_with_code(status: ExitStatus) {
-    use std::os::unix::process::ExitStatusExt;
-
-    if let Some(code) = status.code() {
-        std::process::exit(code);
-    }
-
-    // if ssh gets killed locally
-    if let Some(sig) = status.signal() {
-        unsafe {
-            libc::signal(sig, libc::SIG_DFL);
-            libc::kill(libc::getpid(), sig);
-        }
-        // fallback if kill fails (same as windows)
-        std::process::exit(128 + sig);
-    }
-
-    // fallback to 1 if don't know
-    std::process::exit(1);
-}
-
-#[cfg(not(unix))]
-pub(crate) fn exit_with_code(status: ExitStatus) {
-    std::process::exit(status.code().unwrap_or(1));
-}
-
-pub(crate) fn abs_key_dir(key_dir: Option<PathBuf>) -> Option<PathBuf> {
-    key_dir.map(|key_dir| {
-        if key_dir.is_absolute() {
-            key_dir
-        } else {
-            std::env::current_dir().unwrap_or_default().join(key_dir)
-        }
-    })
 }

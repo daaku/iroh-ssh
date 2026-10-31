@@ -34,7 +34,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     writableTmpDirAsHomeHook
   ];
   versionCheckProgram = "${placeholder "out"}/bin/iroh-ssh";
-  versionCheckProgramArg = "version";
+  versionCheckProgramArg = "--version";
 
   passthru = {
     updateScript = nix-update-script { };
