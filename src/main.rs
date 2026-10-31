@@ -8,7 +8,6 @@ use std::{
 
 use anyhow::{Context as _, anyhow, bail};
 use clap::{ArgAction, Args, Parser, Subcommand};
-use ed25519_dalek::{PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
@@ -21,6 +20,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
+
+const ALPN: &[u8] = b"/iroh/ssh";
 
 const RELAY_URL_HELP: &str = "Use only these relay servers, replacing the defaults (repeatable)";
 const EXTRA_RELAY_URL_HELP: &str = "Add relay servers alongside the defaults (repeatable)";
@@ -85,44 +86,52 @@ fn parse_relay_urls(urls: &[String]) -> anyhow::Result<Vec<RelayUrl>> {
         .collect()
 }
 
-async fn server_mode(server_args: ServerArgs) -> anyhow::Result<()> {
-    let mut iroh_ssh_builder = IrohSsh::builder()
-        .accept_incoming(true)
-        .accept_port(server_args.ssh_port)
-        .key_dir(server_args.key_dir.clone())
-        .relay_urls(parse_relay_urls(&server_args.relay_url)?)
-        .extra_relay_urls(parse_relay_urls(&server_args.extra_relay_url)?);
-    if server_args.persist {
-        iroh_ssh_builder = iroh_ssh_builder.dot_ssh_integration()?;
+async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
+    let ssh_port = args.ssh_port;
+    if is_ssh_server_available(ssh_port, Duration::from_secs(10))
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "SSH server not available on port {ssh_port}, incoming connections will fail. Please ensure you have an SSH server installed and running on port {ssh_port}."
+        );
+        bail!("no ssh server available on specified port")
     }
-    let iroh_ssh = iroh_ssh_builder.build().await?;
+
+    let key_dir = if args.persist {
+        Some(match args.key_dir {
+            Some(dir) => dir,
+            None => my_home()?.context("home directory not found")?.join(".ssh"),
+        })
+    } else {
+        None
+    };
+    let secret_key = match &key_dir {
+        Some(dir) => load_or_create_key(dir)?,
+        None => SecretKey::generate(),
+    };
+
+    let relay_urls = parse_relay_urls(&args.relay_url)?;
+    let extra_relay_urls = parse_relay_urls(&args.extra_relay_url)?;
+    let endpoint = bind_endpoint(secret_key, true, &relay_urls, &extra_relay_urls).await?;
+    let _router = Router::builder(endpoint.clone())
+        .accept(ALPN, SshForwarder { ssh_port })
+        .spawn();
 
     println!("Connect to this this machine:");
     println!(
         "\n  ssh -o ProxyCommand=\"iroh-ssh proxy %h\" {}@{}\n",
         whoami::username().unwrap_or("UNKNOWN_USER".to_string()),
-        iroh_ssh.endpoint_id()
+        endpoint.id()
     );
-    if server_args.persist {
-        let ssh_dir = match server_args.key_dir {
-            Some(dir) => dir,
-            None => {
-                let distro_home =
-                    my_home()?.ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
-                distro_home.join(".ssh")
-            }
-        };
-        println!("  (using persistent keys in {})", ssh_dir.display());
-    } else {
-        println!(
+    match key_dir {
+        Some(dir) => println!("  (using persistent keys in {})", dir.display()),
+        None => println!(
             "  warning: (using ephemeral keys, run 'iroh-ssh server --persist' to create persistent keys)"
-        );
+        ),
     }
     println!();
-    println!(
-        "client -> iroh-ssh -> direct connect -> iroh-ssh -> local ssh :{}",
-        server_args.ssh_port
-    );
+    println!("client -> iroh-ssh -> direct connect -> iroh-ssh -> local ssh :{ssh_port}");
 
     println!("Waiting for incoming connections...");
     println!("Press Ctrl+C to exit");
@@ -137,139 +146,52 @@ fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
         .map_err(|e| anyhow::anyhow!("invalid endpoint id '{hostname}': {e}"))
 }
 
-async fn proxy_mode(proxy_args: ProxyArgs) -> anyhow::Result<()> {
-    let endpoint_id = parse_proxy_target(&proxy_args.endpoint_id)?;
-    let iroh_ssh = IrohSsh::builder()
-        .accept_incoming(false)
-        .relay_urls(parse_relay_urls(&proxy_args.relay_url)?)
-        .extra_relay_urls(parse_relay_urls(&proxy_args.extra_relay_url)?)
-        .build()
-        .await?;
-    iroh_ssh.connect_pubkey(endpoint_id).await
+async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
+    let endpoint_id = parse_proxy_target(&args.endpoint_id)?;
+    let relay_urls = parse_relay_urls(&args.relay_url)?;
+    let extra_relay_urls = parse_relay_urls(&args.extra_relay_url)?;
+    let endpoint =
+        bind_endpoint(SecretKey::generate(), false, &relay_urls, &extra_relay_urls).await?;
+
+    let conn = endpoint.connect(endpoint_id, ALPN).await?;
+    let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
+    let (mut local_read, mut local_write) = (tokio::io::stdin(), tokio::io::stdout());
+    let a_to_b = async move {
+        let res = tokio::io::copy(&mut local_read, &mut iroh_send).await;
+        iroh_send.finish().ok();
+        res
+    };
+    let b_to_a = async move { tokio::io::copy(&mut iroh_recv, &mut local_write).await };
+
+    let (_, _) = tokio::join!(a_to_b, b_to_a);
+    Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct IrohSsh {
-    #[allow(dead_code)]
-    secret_key: [u8; SECRET_KEY_LENGTH],
-    #[allow(dead_code)]
-    public_key: [u8; PUBLIC_KEY_LENGTH],
-    inner: Option<Inner>,
-    ssh_port: u16,
-}
+async fn bind_endpoint(
+    secret_key: SecretKey,
+    announce: bool,
+    relay_urls: &[RelayUrl],
+    extra_relay_urls: &[RelayUrl],
+) -> anyhow::Result<Endpoint> {
+    let mdns_lookup = iroh_mdns_peer_lookup::Options::new()
+        .announce(announce)
+        .build();
+    let mut builder = Endpoint::builder(iroh::endpoint::presets::N0)
+        .secret_key(secret_key)
+        .address_lookup(DhtAddressLookup::builder())
+        .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
-#[derive(Debug, Clone)]
-struct Inner {
-    endpoint: Endpoint,
-    #[allow(dead_code)]
-    router: Router,
-}
-
-#[derive(Debug, Clone)]
-struct Builder {
-    secret_key: [u8; SECRET_KEY_LENGTH],
-    accept_incoming: bool,
-    accept_port: Option<u16>,
-    key_dir: Option<PathBuf>,
-    relay_urls: Vec<RelayUrl>,
-    extra_relay_urls: Vec<RelayUrl>,
-}
-
-const RELAY_TOKEN_ENV: &str = "IROH_RELAY_TOKEN";
-
-impl Builder {
-    fn new() -> Self {
-        Self {
-            secret_key: SecretKey::generate().to_bytes(),
-            accept_incoming: false,
-            accept_port: None,
-            key_dir: None,
-            relay_urls: Vec::new(),
-            extra_relay_urls: Vec::new(),
-        }
+    if let Some(relay_map) =
+        custom_relay_map(relay_urls, extra_relay_urls, relay_auth_token().as_deref())
+    {
+        builder = builder.relay_mode(RelayMode::Custom(relay_map));
     }
 
-    fn accept_incoming(mut self, accept_incoming: bool) -> Self {
-        self.accept_incoming = accept_incoming;
-        self
-    }
-
-    fn accept_port(mut self, accept_port: u16) -> Self {
-        self.accept_port = Some(accept_port);
-        self
-    }
-
-    fn relay_urls(mut self, urls: Vec<RelayUrl>) -> Self {
-        self.relay_urls = urls;
-        self
-    }
-
-    fn extra_relay_urls(mut self, urls: Vec<RelayUrl>) -> Self {
-        self.extra_relay_urls = urls;
-        self
-    }
-
-    fn key_dir(mut self, key_dir: Option<std::path::PathBuf>) -> Self {
-        self.key_dir = key_dir;
-        self
-    }
-
-    fn dot_ssh_integration(mut self) -> anyhow::Result<Self> {
-        let secret_key = dot_ssh(
-            &SecretKey::from_bytes(&self.secret_key),
-            self.key_dir.as_deref(),
-        )?;
-        self.secret_key = secret_key.to_bytes();
-        Ok(self)
-    }
-
-    async fn build(&mut self) -> anyhow::Result<IrohSsh> {
-        // Iroh setup
-        let secret_key = SecretKey::from_bytes(&self.secret_key);
-        let mdns_lookup = iroh_mdns_peer_lookup::Options::new()
-            .announce(self.accept_incoming)
-            .build();
-        let mut builder = Endpoint::builder(iroh::endpoint::presets::N0)
-            .secret_key(secret_key)
-            .address_lookup(DhtAddressLookup::builder())
-            .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
-
-        if let Some(relay_map) = custom_relay_map(
-            &self.relay_urls,
-            &self.extra_relay_urls,
-            relay_auth_token().as_deref(),
-        ) {
-            builder = builder.relay_mode(RelayMode::Custom(relay_map));
-        }
-
-        let endpoint = builder.bind().await?;
-
-        let mut iroh_ssh = IrohSsh {
-            public_key: *endpoint.id().as_bytes(),
-            secret_key: self.secret_key,
-            inner: None,
-            ssh_port: self.accept_port.unwrap_or(22),
-        };
-
-        let router = if self.accept_incoming {
-            if is_ssh_server_available(iroh_ssh.ssh_port, Duration::from_secs(10)).await.is_err() {
-                eprintln!("SSH server not available on port {}, incoming connections will fail. Please ensure you have an SSH server installed and running on port {}.", iroh_ssh.ssh_port, iroh_ssh.ssh_port);
-                bail!("no ssh server available on specified port")
-            }
-            Router::builder(endpoint.clone()).accept(IrohSsh::ALPN(), iroh_ssh.clone())
-        } else {
-            Router::builder(endpoint.clone())
-        }
-        .spawn();
-
-        iroh_ssh.add_inner(endpoint, router);
-
-        Ok(iroh_ssh)
-    }
+    Ok(builder.bind().await?)
 }
 
 fn relay_auth_token() -> Option<String> {
-    std::env::var(RELAY_TOKEN_ENV)
+    std::env::var("IROH_RELAY_TOKEN")
         .ok()
         .filter(|token| !token.is_empty())
 }
@@ -323,51 +245,13 @@ async fn is_ssh_server_available(port: u16, timeout: Duration) -> anyhow::Result
     .await?
 }
 
-impl Default for Builder {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Forwards incoming iroh connections to the local ssh server.
+#[derive(Debug, Clone)]
+struct SshForwarder {
+    ssh_port: u16,
 }
 
-impl IrohSsh {
-    fn builder() -> Builder {
-        Builder::new()
-    }
-
-    #[allow(non_snake_case)]
-    fn ALPN() -> Vec<u8> {
-        b"/iroh/ssh".to_vec()
-    }
-
-    fn add_inner(&mut self, endpoint: Endpoint, router: Router) {
-        self.inner = Some(Inner { endpoint, router });
-    }
-
-    async fn connect_pubkey(&self, endpoint_id: EndpointId) -> anyhow::Result<()> {
-        let inner = self.inner.as_ref().expect("inner not set");
-        let conn = inner
-            .endpoint
-            .connect(endpoint_id, &IrohSsh::ALPN())
-            .await?;
-        let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
-        let (mut local_read, mut local_write) = (tokio::io::stdin(), tokio::io::stdout());
-        let a_to_b = async move {
-            let res = tokio::io::copy(&mut local_read, &mut iroh_send).await;
-            iroh_send.finish().ok();
-            res
-        };
-        let b_to_a = async move { tokio::io::copy(&mut iroh_recv, &mut local_write).await };
-
-        let (_, _) = tokio::join!(a_to_b, b_to_a);
-        Ok(())
-    }
-
-    fn endpoint_id(&self) -> EndpointId {
-        self.inner.as_ref().expect("inner not set").endpoint.id()
-    }
-}
-
-impl ProtocolHandler for IrohSsh {
+impl ProtocolHandler for SshForwarder {
     async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
         let endpoint_id = connection.remote_id();
 
@@ -408,38 +292,26 @@ impl ProtocolHandler for IrohSsh {
     }
 }
 
-fn dot_ssh(default_secret_key: &SecretKey, key_dir: Option<&Path>) -> anyhow::Result<SecretKey> {
-    let ssh_dir = if let Some(dir) = key_dir {
-        dir.to_path_buf()
-    } else {
-        let distro_home = my_home()?.ok_or_else(|| anyhow::anyhow!("home directory not found"))?;
-        distro_home.join(".ssh")
-    };
-
-    let pub_key = ssh_dir.join("irohssh_ed25519.pub");
-    let priv_key = ssh_dir.join("irohssh_ed25519");
-
-    if !ssh_dir.exists() {
-        std::fs::create_dir_all(&ssh_dir)?;
-        println!("[INFO] created .ssh folder: {}", ssh_dir.display());
-    }
-
+/// Loads the server's key from `dir`, creating it on first use.
+fn load_or_create_key(dir: &Path) -> anyhow::Result<SecretKey> {
+    let priv_key = dir.join("irohssh_ed25519");
     if priv_key.exists() {
         let encoded = std::fs::read(&priv_key)
             .with_context(|| format!("failed to read secret key from {}", priv_key.display()))?;
-        let bytes: [u8; SECRET_KEY_LENGTH] = z32::decode(&encoded)?
+        let bytes: [u8; 32] = z32::decode(&encoded)?
             .try_into()
             .map_err(|_| anyhow!("invalid secret key in {}", priv_key.display()))?;
-        Ok(SecretKey::from_bytes(&bytes))
-    } else {
-        let secret_key = default_secret_key.clone();
-        let public_key = secret_key.public();
-
-        write_private(&priv_key, &z32::encode(&secret_key.to_bytes()))?;
-        std::fs::write(&pub_key, z32::encode(public_key.as_bytes()))?;
-
-        Ok(secret_key)
+        return Ok(SecretKey::from_bytes(&bytes));
     }
+
+    let secret_key = SecretKey::generate();
+    std::fs::create_dir_all(dir)?;
+    write_private(&priv_key, &z32::encode(&secret_key.to_bytes()))?;
+    std::fs::write(
+        dir.join("irohssh_ed25519.pub"),
+        z32::encode(secret_key.public().as_bytes()),
+    )?;
+    Ok(secret_key)
 }
 
 /// Creates a file only the current user can read, failing if it already exists.
@@ -532,10 +404,10 @@ mod tests {
     #[test]
     fn key_survives_a_missing_public_key_file() {
         let dir = tempfile::tempdir().unwrap();
-        let key = dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+        let key = load_or_create_key(dir.path()).unwrap();
         std::fs::remove_file(dir.path().join("irohssh_ed25519.pub")).unwrap();
 
-        let reloaded = dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+        let reloaded = load_or_create_key(dir.path()).unwrap();
         assert_eq!(reloaded.to_bytes(), key.to_bytes());
     }
 
@@ -545,7 +417,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
-        dot_ssh(&SecretKey::generate(), Some(dir.path())).unwrap();
+        load_or_create_key(dir.path()).unwrap();
 
         let metadata = std::fs::metadata(dir.path().join("irohssh_ed25519")).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
@@ -557,6 +429,6 @@ mod tests {
         // valid z-base32, but not 32 bytes
         std::fs::write(dir.path().join("irohssh_ed25519"), "yyyy").unwrap();
 
-        assert!(dot_ssh(&SecretKey::generate(), Some(dir.path())).is_err());
+        assert!(load_or_create_key(dir.path()).is_err());
     }
 }
