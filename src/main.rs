@@ -76,14 +76,19 @@ struct ServerArgs {
     relay: RelayArgs,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    match cli.cmd {
-        Cmd::Server(args) => server_mode(args).await,
-        Cmd::Proxy(args) => proxy_mode(args).await,
-    }
+    let runtime = tokio::runtime::Runtime::new()?;
+    let result = runtime.block_on(async {
+        match cli.cmd {
+            Cmd::Server(args) => server_mode(args).await,
+            Cmd::Proxy(args) => proxy_mode(args).await,
+        }
+    });
+    // A blocking read of stdin can't be cancelled and would hang a normal shutdown.
+    runtime.shutdown_background();
+    result
 }
 
 async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
@@ -140,17 +145,30 @@ fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
 async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
     let endpoint = bind_endpoint(SecretKey::generate(), false, &args.relay).await?;
 
-    let conn = endpoint.connect(args.endpoint_id, ALPN).await?;
-    let (mut iroh_send, mut iroh_recv) = conn.open_bi().await?;
-    let (mut local_read, mut local_write) = (tokio::io::stdin(), tokio::io::stdout());
-    let a_to_b = async move {
-        let res = tokio::io::copy(&mut local_read, &mut iroh_send).await;
-        iroh_send.finish().ok();
-        res
-    };
-    let b_to_a = async move { tokio::io::copy(&mut iroh_recv, &mut local_write).await };
+    let connection = endpoint.connect(args.endpoint_id, ALPN).await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
 
-    let (_, _) = tokio::join!(a_to_b, b_to_a);
+    // A failed write means the server stopped reading, and whatever it sent
+    // before that is still worth receiving, so only the read side's errors matter.
+    let stdin_to_remote = async {
+        tokio::io::copy(&mut tokio::io::stdin(), &mut send)
+            .await
+            .ok();
+        send.finish().ok();
+    };
+    let mut stdout = tokio::io::stdout();
+    let remote_to_stdout = tokio::io::copy(&mut recv, &mut stdout);
+    tokio::pin!(remote_to_stdout);
+
+    // Keep reading after stdin closes, but don't wait for stdin once the server
+    // is done: ssh only closes it after seeing EOF from us.
+    tokio::select! {
+        result = &mut remote_to_stdout => result?,
+        () = stdin_to_remote => remote_to_stdout.await?,
+    };
+
+    connection.close(0u32.into(), b"done");
+    endpoint.close().await;
     Ok(())
 }
 
