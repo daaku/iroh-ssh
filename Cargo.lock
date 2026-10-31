@@ -2350,15 +2350,12 @@ version = "0.2.12"
 dependencies = [
  "anyhow",
  "clap",
- "ed25519-dalek",
  "homedir",
  "iroh",
  "iroh-mainline-address-lookup",
  "iroh-mdns-peer-lookup",
- "rand",
  "tempfile",
  "tokio",
- "tokio-stream",
  "whoami",
  "z32",
 ]
