@@ -1,4 +1,3 @@
-[Español](README_es.md) [Portuguese](README_pt.md)
 # iroh-ssh
 
 [![Crates.io](https://img.shields.io/crates/v/iroh-ssh.svg)](https://crates.io/crates/iroh-ssh)
@@ -202,10 +201,6 @@ Display its Endpoint ID and share it to allow connection
 - [x] Password authentication
 - [x] Persistent SSH keys
 - [x] Add -p flag for persistence
-
-## Custom Relay Setup
-
-see: [CUSTOM_RELAY.md](CUSTOM_RELAY.md)
 
 ## License
 
