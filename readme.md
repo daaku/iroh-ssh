@@ -1,188 +1,26 @@
 # iroh-ssh
 
-[![Crates.io](https://img.shields.io/crates/v/iroh-ssh.svg)](https://crates.io/crates/iroh-ssh)
-[![Documentation](https://docs.rs/iroh-ssh/badge.svg)](https://docs.rs/iroh-ssh)
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](license)
-[![AUR](https://img.shields.io/aur/version/iroh-ssh-git)](https://aur.archlinux.org/packages/iroh-ssh-git)
-[![Discord](https://img.shields.io/discord/1403836127458099381?logo=discord&label=Discord)](https://discord.gg/c22SPMYAwZ)
+Reach an ssh server by endpoint id instead of IP address, through NATs and firewalls.
 
-**SSH to any machine without ip, behind a NAT/firewall without port forwarding or VPN setup.**
+Binaries: [latest release](https://github.com/rustonbsd/iroh-ssh/releases/latest)
 
-```bash
-# on server
-> iroh-ssh server --persist
+## Server
 
-    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+Run this next to your ssh server, under whatever keeps it running:
 
-
-# on client
-> ssh -o ProxyCommand="iroh-ssh proxy %h" user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
-# or with certificate
-> ssh -o ProxyCommand="iroh-ssh proxy %h" -i ~/.ssh/id_rsa_my_cert my-user@bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
+```sh
+iroh-ssh server --persist
 ```
 
-**That's all it takes.** (requires ssh/(an ssh server) to be installed)
+It prints the endpoint id, which stays the same across restarts.
 
----
+## Client
 
-## Installation
+In `~/.ssh/config`:
 
-```bash
-cargo install iroh-ssh
 ```
-
-Arch Linux ([AUR](https://aur.archlinux.org/packages/iroh-ssh-git))
-```bash
-yay -S iroh-ssh-git
-```
-
-Download and setup the binary automatically for your operating system from [GitHub Releases](https://github.com/rustonbsd/iroh-ssh/releases):
-
-Linux
-```bash
-# Linux
-wget https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-unknown-linux-musl
-chmod +x iroh-ssh-x86_64-unknown-linux-musl
-sudo mv iroh-ssh-x86_64-unknown-linux-musl /usr/local/bin/iroh-ssh
-```
-
-Linux (ARM)
-```bash
-# Linux
-wget https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-aarch64-unknown-linux-musl
-chmod +x iroh-ssh-aarch64-unknown-linux-musl
-sudo mv iroh-ssh-aarch64-unknown-linux-musl /usr/local/bin/iroh-ssh
-```
-
-macOS (ARM)
-```bash
-# macOS arm
-curl -LJO https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-aarch64-apple-darwin
-chmod +x iroh-ssh-aarch64-apple-darwin
-sudo mv iroh-ssh-aarch64-apple-darwin /usr/local/bin/iroh-ssh
-```
-
-Windows
-```bash
-# Windows x86 64bit
-curl -L -o iroh-ssh.exe https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-pc-windows-msvc.exe
-mkdir %LOCALAPPDATA%\iroh-ssh
-move iroh-ssh.exe %LOCALAPPDATA%\iroh-ssh\
-setx PATH "%PATH%;%LOCALAPPDATA%\iroh-ssh"
-```
-
-Verify that the installation was successful
-```bash
-# restart your terminal first
-> iroh-ssh --help
-```
-
----
-
-## Client Connection
-
-```bash
-# Install for your distro (see above)
-# Connect from anywhere
-> ssh -o ProxyCommand="iroh-ssh proxy %h" my-user@38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
-
-# or in ~/.ssh/config, then `ssh my-server`
 Host my-server
-    HostName 38b7dc10df96005255c3beaeaeef6cfebd88344aa8c85e1dbfc1ad5e50f372ac
-    User my-user
-    ProxyCommand iroh-ssh proxy %h
+    ProxyCommand iroh-ssh proxy <endpoint id>
 ```
 
-Works through any firewall, NAT, or private network. No configuration needed.
-
----
-
-## Server Setup
-
-```bash
-# Install for your distro (see above)
-# (use with tmux)
-
-> iroh-ssh server --persist
-
-    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
-```
-
-or use ephemeral keys
-
-```bash
-# Install for your distro (see above)
-# (use with tmux)
-
-> iroh-ssh server
-
-    bb8e1a5661a6dfa9ae2dd978922f30f524f6fd8c99b3de021c53f292aae74330
-```
-
-The server prints its Endpoint ID, share it to allow connections.
-
----
-
-## How It Works
-
-```
-┌─────────────┐          ┌─────────────────┐          ┌─────────────┐
-│     SSH     │─────────▶│  QUIC Tunnel    │─────────▶│  iroh-ssh   │
-│   Client    │          │  (P2P Network)  │          │   server    │
-└─────────────┘          └─────────────────┘          └─────────────┘
-      │                           ▲                            │
-      │                           │                            │
-      ▼                           │                            ▼
-┌─────────────┐          ┌─────────────┐          ┌──────────────────┐
-│ ProxyCommand│          │  iroh-ssh   │          │   SSH Server     │
-│ iroh-ssh    │──────────│    proxy    │          │ localhost:22     │
-│ proxy %h    │          │             │          └──────────────────┘
-└─────────────┘          └─────────────┘
-```
-
-1. **SSH Client**: Invokes `iroh-ssh proxy` via SSH's ProxyCommand
-2. **Proxy**: Establishes QUIC connection through Iroh's P2P network (automatic NAT traversal)
-3. **Server**: Accepts connection and proxies to local SSH daemon (port 22)
-4. **Authentication**: Standard SSH security end-to-end over encrypted QUIC tunnel
-
-## Use Cases
-
-- **VNC/RDP over SSH**: Securely access graphical desktops remotely
-- **VisualStudio SSH Extension**: Develop on remote machines seamlessly
-- **Remote servers**: Access cloud instances without exposing SSH ports
-- **Home networks**: Connect to devices behind router/firewall
-- **Corporate networks**: Bypass restrictive network policies
-- **IoT devices**: SSH to embedded systems on private networks
-- **Development**: Access staging servers and build machines
-
-## Commands
-
-```bash
-# Server modes
-> iroh-ssh server --persist          # Interactive mode, e.g. use tmux (default SSH port 22)
-> iroh-ssh server --ssh-port 2222    # Custom SSH port (using ephemeral keys)
-> iroh-ssh server --ipv4-addr 0.0.0.0:4433   # Fixed UDP port, e.g. for a firewall rule
-
-# Client connection
-> ssh -o ProxyCommand="iroh-ssh proxy %h" user@<ENDPOINT_ID>                 # Connect to a remote server
-> ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" user@<ENDPOINT_ID>   # Set relay options on the proxy
-```
-
-Logs go to stderr. Set `RUST_LOG` to see more, e.g. `RUST_LOG=iroh_ssh=info`.
-
-## Security Model
-
-- **Endpoint ID access**: Anyone with the Endpoint ID can reach your SSH port
-- **SSH authentication**: SSH key file, certificate and password auth are supported
-- **Persistent keys**: Uses dedicated `.ssh/irohssh_ed25519` keypair
-- **QUIC encryption**: Transport layer encryption between endpoints
-
-## Status
-
-- [x] Password authentication
-- [x] Persistent SSH keys
-- [x] Add -p flag for persistence
-
-## License
-
-Licensed under either of Apache License 2.0 or MIT license at your option.
+Then `ssh my-server`.
