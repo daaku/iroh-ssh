@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context as _, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
@@ -26,23 +26,31 @@ use tokio::{
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 
-#[derive(Parser)]
-#[command(name = "iroh-ssh", about = "ssh without ip", version)]
-struct Cli {
+/// ssh without ip.
+///
+/// One side runs a server next to an ssh server, the other side reaches it
+/// through ssh's ProxyCommand. Servers are identified by a 32 byte endpoint id.
+///
+/// Connecting to an endpoint id is independent of its IP address. iroh-ssh will
+/// try to establish a direct connection even through NATs and firewalls. If that
+/// fails, it will fall back to using a relay server.
+#[derive(Parser, Debug)]
+#[command(version)]
+struct Args {
     #[command(subcommand)]
-    cmd: Cmd,
+    command: Commands,
 }
 
-#[derive(Subcommand)]
-enum Cmd {
+#[derive(Subcommand, Debug)]
+enum Commands {
     /// Accept iroh connections and forward them to the local ssh server
     Server(ServerArgs),
     /// Connect stdin and stdout to a server, for use as ssh's ProxyCommand
     Proxy(ProxyArgs),
 }
 
-#[derive(Args)]
-struct RelayArgs {
+#[derive(Parser, Debug)]
+struct CommonArgs {
     /// Use only these relay servers, replacing the defaults (repeatable)
     #[arg(long, value_name = "URL", conflicts_with = "extra_relay_url")]
     relay_url: Vec<RelayUrl>,
@@ -52,17 +60,17 @@ struct RelayArgs {
     extra_relay_url: Vec<RelayUrl>,
 }
 
-#[derive(Args)]
+#[derive(Parser, Debug)]
 struct ProxyArgs {
     /// Server endpoint id, as ssh's %h or %h:%p
     #[arg(value_name = "ENDPOINT_ID", value_parser = parse_proxy_target)]
     endpoint_id: EndpointId,
 
     #[command(flatten)]
-    relay: RelayArgs,
+    common: CommonArgs,
 }
 
-#[derive(Args)]
+#[derive(Parser, Debug)]
 struct ServerArgs {
     /// Port of the local ssh server
     #[arg(long, default_value_t = 22)]
@@ -77,17 +85,17 @@ struct ServerArgs {
     key_dir: Option<PathBuf>,
 
     #[command(flatten)]
-    relay: RelayArgs,
+    common: CommonArgs,
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let args = Args::parse();
 
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(async {
-        match cli.cmd {
-            Cmd::Server(args) => server_mode(args).await,
-            Cmd::Proxy(args) => proxy_mode(args).await,
+        match args.command {
+            Commands::Server(args) => server(args).await,
+            Commands::Proxy(args) => proxy(args).await,
         }
     });
     // A blocking read of stdin can't be cancelled and would hang a normal shutdown.
@@ -95,7 +103,7 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
+async fn server(args: ServerArgs) -> anyhow::Result<()> {
     let ssh_port = args.ssh_port;
     check_ssh_server(ssh_port).await.with_context(|| {
         format!("no ssh server on port {ssh_port}, please install one or set --ssh-port")
@@ -106,12 +114,12 @@ async fn server_mode(args: ServerArgs) -> anyhow::Result<()> {
             Some(dir) => dir,
             None => my_home()?.context("home directory not found")?.join(".ssh"),
         };
-        load_or_create_key(&key_dir)?
+        get_or_create_secret(&key_dir)?
     } else {
         SecretKey::generate()
     };
 
-    let endpoint = bind_endpoint(secret_key, true, &args.relay).await?;
+    let endpoint = create_endpoint(secret_key, &args.common, true).await?;
     let router = Router::builder(endpoint.clone())
         .accept(ALPN, SshForwarder { ssh_port })
         .spawn();
@@ -128,27 +136,27 @@ fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
     EndpointId::from_str(hostname).with_context(|| format!("invalid endpoint id '{hostname}'"))
 }
 
-async fn proxy_mode(args: ProxyArgs) -> anyhow::Result<()> {
-    let endpoint = bind_endpoint(SecretKey::generate(), false, &args.relay).await?;
+async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
+    let endpoint = create_endpoint(SecretKey::generate(), &args.common, false).await?;
 
     let connection = endpoint.connect(args.endpoint_id, ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
 
     // A failed write means the server stopped reading, and whatever it sent
     // before that is still worth receiving, so only the read side's errors matter.
-    let stdin_to_remote = async {
+    let forward_from_stdin = async {
         copy_flushing(&mut tokio::io::stdin(), &mut send).await.ok();
         send.finish().ok();
     };
     let mut stdout = tokio::io::stdout();
-    let remote_to_stdout = copy_flushing(&mut recv, &mut stdout);
-    tokio::pin!(remote_to_stdout);
+    let forward_to_stdout = copy_flushing(&mut recv, &mut stdout);
+    tokio::pin!(forward_to_stdout);
 
     // Keep reading after stdin closes, but don't wait for stdin once the server
     // is done: ssh only closes it after seeing EOF from us.
     tokio::select! {
-        result = &mut remote_to_stdout => result?,
-        () = stdin_to_remote => remote_to_stdout.await?,
+        result = &mut forward_to_stdout => result?,
+        () = forward_from_stdin => forward_to_stdout.await?,
     };
 
     connection.close(0u32.into(), b"done");
@@ -176,10 +184,11 @@ where
     }
 }
 
-async fn bind_endpoint(
+/// Create a new iroh endpoint.
+async fn create_endpoint(
     secret_key: SecretKey,
+    common: &CommonArgs,
     announce: bool,
-    relay: &RelayArgs,
 ) -> anyhow::Result<Endpoint> {
     let mdns_lookup = iroh_mdns_peer_lookup::Options::new()
         .announce(announce)
@@ -190,8 +199,8 @@ async fn bind_endpoint(
         .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
     if let Some(relay_map) = custom_relay_map(
-        &relay.relay_url,
-        &relay.extra_relay_url,
+        &common.relay_url,
+        &common.extra_relay_url,
         relay_auth_token().as_deref(),
     ) {
         builder = builder.relay_mode(RelayMode::Custom(relay_map));
@@ -255,21 +264,21 @@ struct SshForwarder {
 
 impl SshForwarder {
     async fn forward(&self, connection: &Connection) -> anyhow::Result<()> {
-        let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
-        let mut ssh_stream = TcpStream::connect(("localhost", self.ssh_port))
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let mut tcp_stream = TcpStream::connect(("localhost", self.ssh_port))
             .await
             .context("failed to connect to the ssh server")?;
-        let (mut ssh_read, mut ssh_write) = ssh_stream.split();
+        let (mut tcp_recv, mut tcp_send) = tcp_stream.split();
 
-        let ssh_to_remote = async {
-            copy_flushing(&mut ssh_read, &mut iroh_send).await.ok();
-            iroh_send.finish().ok();
+        let forward_from_tcp = async {
+            copy_flushing(&mut tcp_recv, &mut send).await.ok();
+            send.finish().ok();
         };
-        let remote_to_ssh = async {
-            copy_flushing(&mut iroh_recv, &mut ssh_write).await.ok();
-            ssh_write.shutdown().await.ok();
+        let forward_to_tcp = async {
+            copy_flushing(&mut recv, &mut tcp_send).await.ok();
+            tcp_send.shutdown().await.ok();
         };
-        tokio::join!(ssh_to_remote, remote_to_ssh);
+        tokio::join!(forward_from_tcp, forward_to_tcp);
 
         // Dropping the connection discards data the client hasn't received yet,
         // so let the client, which reads last, close it.
@@ -289,7 +298,7 @@ impl ProtocolHandler for SshForwarder {
 }
 
 /// Loads the server's key from `dir`, creating it on first use.
-fn load_or_create_key(dir: &Path) -> anyhow::Result<SecretKey> {
+fn get_or_create_secret(dir: &Path) -> anyhow::Result<SecretKey> {
     let priv_key = dir.join("irohssh_ed25519");
     if priv_key.exists() {
         let encoded = std::fs::read(&priv_key)
@@ -381,8 +390,8 @@ mod tests {
 
     #[test]
     fn only_server_and_proxy_are_accepted() {
-        assert!(Cli::try_parse_from(["iroh-ssh", "server"]).is_ok());
-        assert!(Cli::try_parse_from(["iroh-ssh", "proxy", ENDPOINT_ID]).is_ok());
+        assert!(Args::try_parse_from(["iroh-ssh", "server"]).is_ok());
+        assert!(Args::try_parse_from(["iroh-ssh", "proxy", ENDPOINT_ID]).is_ok());
 
         for args in [
             vec!["iroh-ssh"],
@@ -394,17 +403,17 @@ mod tests {
             vec!["iroh-ssh", "run-service"],
             vec!["iroh-ssh", "version"],
         ] {
-            assert!(Cli::try_parse_from(&args).is_err(), "{args:?} should fail");
+            assert!(Args::try_parse_from(&args).is_err(), "{args:?} should fail");
         }
     }
 
     #[test]
     fn key_survives_a_missing_public_key_file() {
         let dir = tempfile::tempdir().unwrap();
-        let key = load_or_create_key(dir.path()).unwrap();
+        let key = get_or_create_secret(dir.path()).unwrap();
         std::fs::remove_file(dir.path().join("irohssh_ed25519.pub")).unwrap();
 
-        let reloaded = load_or_create_key(dir.path()).unwrap();
+        let reloaded = get_or_create_secret(dir.path()).unwrap();
         assert_eq!(reloaded.to_bytes(), key.to_bytes());
     }
 
@@ -414,7 +423,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         let dir = tempfile::tempdir().unwrap();
-        load_or_create_key(dir.path()).unwrap();
+        get_or_create_secret(dir.path()).unwrap();
 
         let metadata = std::fs::metadata(dir.path().join("irohssh_ed25519")).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
@@ -426,7 +435,7 @@ mod tests {
         // valid z-base32, but not 32 bytes
         std::fs::write(dir.path().join("irohssh_ed25519"), "yyyy").unwrap();
 
-        assert!(load_or_create_key(dir.path()).is_err());
+        assert!(get_or_create_secret(dir.path()).is_err());
     }
 
     #[test]
@@ -440,19 +449,19 @@ mod tests {
             "--extra-relay-url",
             url,
         ];
-        assert!(Cli::try_parse_from(args).is_err());
+        assert!(Args::try_parse_from(args).is_err());
     }
 
     #[test]
     fn invalid_relay_url_is_rejected() {
         let args = ["iroh-ssh", "server", "--relay-url", "not a url"];
-        assert!(Cli::try_parse_from(args).is_err());
+        assert!(Args::try_parse_from(args).is_err());
     }
 
     #[test]
     fn key_dir_requires_persist() {
-        assert!(Cli::try_parse_from(["iroh-ssh", "server", "--key-dir", "/tmp"]).is_err());
-        assert!(Cli::try_parse_from(["iroh-ssh", "server", "-p", "--key-dir", "/tmp"]).is_ok());
+        assert!(Args::try_parse_from(["iroh-ssh", "server", "--key-dir", "/tmp"]).is_err());
+        assert!(Args::try_parse_from(["iroh-ssh", "server", "-p", "--key-dir", "/tmp"]).is_ok());
     }
 
     #[tokio::test]
