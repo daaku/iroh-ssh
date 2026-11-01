@@ -88,19 +88,22 @@ struct ServerArgs {
     common: CommonArgs,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
-
-    let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime.block_on(async {
-        match args.command {
-            Commands::Server(args) => server(args).await,
-            Commands::Proxy(args) => proxy(args).await,
+    let res = match args.command {
+        Commands::Server(args) => server(args).await,
+        Commands::Proxy(args) => proxy(args).await,
+    };
+    // Exit rather than return: a blocking read of stdin can't be cancelled and
+    // would hang the runtime's shutdown.
+    match res {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            std::process::exit(1)
         }
-    });
-    // A blocking read of stdin can't be cancelled and would hang a normal shutdown.
-    runtime.shutdown_background();
-    result
+    }
 }
 
 async fn server(args: ServerArgs) -> anyhow::Result<()> {
