@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
-    endpoint::{Accepting, RecvStream, RelayMode, SendStream},
+    endpoint::{Accepting, QuicTransportConfig, RecvStream, RelayMode, SendStream, VarInt},
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
@@ -28,6 +28,9 @@ use tracing_subscriber::EnvFilter;
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The 1.25 MB default limits a stream to about 70 MB/s at the 16ms RTT of a busy
+/// Wi-Fi link. Larger windows gave no further gain up to 30ms.
+const STREAM_RECEIVE_WINDOW: u32 = 4 * 1024 * 1024;
 
 /// ssh without ip.
 ///
@@ -288,6 +291,11 @@ async fn create_endpoint(
         .announce(!alpns.is_empty())
         .build();
     let mut builder = Endpoint::builder(iroh::endpoint::presets::N0)
+        .transport_config(
+            QuicTransportConfig::builder()
+                .stream_receive_window(VarInt::from_u32(STREAM_RECEIVE_WINDOW))
+                .build(),
+        )
         .secret_key(secret_key)
         .alpns(alpns)
         .address_lookup(DhtAddressLookup::builder())
