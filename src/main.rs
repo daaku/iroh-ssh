@@ -225,14 +225,20 @@ async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
 
     // Keep reading after stdin closes, but don't wait for stdin once the server
     // is done: ssh only closes it after seeing EOF from us.
+    let forward = async {
+        tokio::select! {
+            res = &mut forward_to_stdout => res,
+            // A failed write means the server stopped reading, and whatever it sent
+            // before that is still worth receiving, so only the read side's errors matter.
+            _ = forward_from_stdin => forward_to_stdout.await,
+        }
+    };
+
     tokio::select! {
-        res = &mut forward_to_stdout => res?,
-        // A failed write means the server stopped reading, and whatever it sent
-        // before that is still worth receiving, so only the read side's errors matter.
-        _ = forward_from_stdin => forward_to_stdout.await?,
+        res = forward => res?,
         // Close the connection so the server doesn't wait for an idle timeout.
         _ = tokio::signal::ctrl_c() => {}
-    };
+    }
 
     connection.close(0u32.into(), b"done");
     endpoint.close().await;
