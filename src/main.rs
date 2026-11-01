@@ -200,6 +200,11 @@ async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::
     let tcp_stream = TcpStream::connect(("localhost", ssh_port))
         .await
         .context("error connecting to the ssh server")?;
+    // sftp read requests and ssh window updates are small writes that the sender of a
+    // download waits on, so Nagle's algorithm would cap downloads at about half speed.
+    tcp_stream
+        .set_nodelay(true)
+        .context("error setting TCP_NODELAY")?;
     let (tcp_recv, tcp_send) = tcp_stream.into_split();
 
     let forward_from_tcp = copy_to_noq(tcp_recv, send);
