@@ -41,31 +41,39 @@ Download and setup the binary automatically for your operating system from [GitH
 Linux
 ```bash
 # Linux
-wget https://github.com/rustonbsd/iroh-ssh/releases/download/0.2.12/iroh-ssh.linux
-chmod +x iroh-ssh.linux
-sudo mv iroh-ssh.linux /usr/local/bin/iroh-ssh
+wget https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-unknown-linux-musl
+chmod +x iroh-ssh-x86_64-unknown-linux-musl
+sudo mv iroh-ssh-x86_64-unknown-linux-musl /usr/local/bin/iroh-ssh
 ```
 
 Linux (ARM)
 ```bash
 # Linux
-wget https://github.com/rustonbsd/iroh-ssh/releases/download/0.2.12/iroh-ssh.linux-aarch64
-chmod +x iroh-ssh.linux-aarch64
-sudo mv iroh-ssh.linux-aarch64 /usr/local/bin/iroh-ssh
+wget https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-aarch64-unknown-linux-musl
+chmod +x iroh-ssh-aarch64-unknown-linux-musl
+sudo mv iroh-ssh-aarch64-unknown-linux-musl /usr/local/bin/iroh-ssh
+```
+
+macOS (Intel)
+```bash
+# macOS x86 64bit
+curl -LJO https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-apple-darwin
+chmod +x iroh-ssh-x86_64-apple-darwin
+sudo mv iroh-ssh-x86_64-apple-darwin /usr/local/bin/iroh-ssh
 ```
 
 macOS (ARM)
 ```bash
 # macOS arm
-curl -LJO https://github.com/rustonbsd/iroh-ssh/releases/download/0.2.12/iroh-ssh.macos
-chmod +x iroh-ssh.macos
-sudo mv iroh-ssh.macos /usr/local/bin/iroh-ssh
+curl -LJO https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-aarch64-apple-darwin
+chmod +x iroh-ssh-aarch64-apple-darwin
+sudo mv iroh-ssh-aarch64-apple-darwin /usr/local/bin/iroh-ssh
 ```
 
 Windows
 ```bash
 # Windows x86 64bit
-curl -L -o iroh-ssh.exe https://github.com/rustonbsd/iroh-ssh/releases/download/0.2.12/iroh-ssh.exe
+curl -L -o iroh-ssh.exe https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-pc-windows-msvc.exe
 mkdir %LOCALAPPDATA%\iroh-ssh
 move iroh-ssh.exe %LOCALAPPDATA%\iroh-ssh\
 setx PATH "%PATH%;%LOCALAPPDATA%\iroh-ssh"
