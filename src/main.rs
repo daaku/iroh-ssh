@@ -20,11 +20,13 @@ use tokio::{
         BufReader,
     },
     net::TcpStream,
+    time::timeout,
 };
 use tracing_subscriber::EnvFilter;
 
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
+const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// ssh without ip.
 ///
@@ -130,6 +132,10 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
     };
 
     let endpoint = create_endpoint(secret_key, &args.common, vec![ALPN.to_vec()]).await?;
+    // wait for the endpoint to reach its home relay before giving out its id
+    if timeout(ONLINE_TIMEOUT, endpoint.online()).await.is_err() {
+        eprintln!("Warning: Failed to connect to the home relay");
+    }
     println!("{}", endpoint.id());
 
     loop {
@@ -319,7 +325,7 @@ async fn check_ssh_server(port: u16) -> anyhow::Result<()> {
         }
         bail!("connection closed before the ssh banner")
     };
-    tokio::time::timeout(Duration::from_secs(10), probe)
+    timeout(Duration::from_secs(10), probe)
         .await
         .context("timed out")?
 }
