@@ -25,6 +25,10 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
+// Release builds are linked against musl, whose allocator costs about 20% of throughput.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
