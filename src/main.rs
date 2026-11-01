@@ -1,5 +1,6 @@
 use std::{
     io::{self, Write as _},
+    net::{SocketAddrV4, SocketAddrV6},
     path::{Path, PathBuf},
     str::FromStr as _,
     sync::Arc,
@@ -53,6 +54,20 @@ enum Commands {
 
 #[derive(Parser, Debug)]
 struct CommonArgs {
+    /// The IPv4 address that the endpoint will listen on.
+    ///
+    /// If None, defaults to a random free port, but it can be useful to specify a
+    /// fixed port, e.g. to configure a firewall rule.
+    #[arg(long)]
+    ipv4_addr: Option<SocketAddrV4>,
+
+    /// The IPv6 address that the endpoint will listen on.
+    ///
+    /// If None, defaults to a random free port, but it can be useful to specify a
+    /// fixed port, e.g. to configure a firewall rule.
+    #[arg(long)]
+    ipv6_addr: Option<SocketAddrV6>,
+
     /// Use only these relay servers, replacing the defaults (repeatable)
     #[arg(long, value_name = "URL", conflicts_with = "extra_relay_url")]
     relay_url: Vec<RelayUrl>,
@@ -272,6 +287,12 @@ async fn create_endpoint(
         .address_lookup(DhtAddressLookup::builder())
         .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
+    if let Some(addr) = common.ipv4_addr {
+        builder = builder.bind_addr(addr)?;
+    }
+    if let Some(addr) = common.ipv6_addr {
+        builder = builder.bind_addr(addr)?;
+    }
     if let Some(relay_map) = custom_relay_map(
         &common.relay_url,
         &common.extra_relay_url,
@@ -489,6 +510,24 @@ mod tests {
     fn invalid_relay_url_is_rejected() {
         let args = ["iroh-ssh", "server", "--relay-url", "not a url"];
         assert!(Args::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn bind_addrs_are_parsed() {
+        let args = Args::try_parse_from([
+            "iroh-ssh",
+            "server",
+            "--ipv4-addr",
+            "0.0.0.0:4433",
+            "--ipv6-addr",
+            "[::]:4433",
+        ])
+        .unwrap();
+        let Commands::Server(args) = args.command else {
+            panic!("expected the server command");
+        };
+        assert_eq!(args.common.ipv4_addr.unwrap().port(), 4433);
+        assert_eq!(args.common.ipv6_addr.unwrap().port(), 4433);
     }
 
     #[test]

@@ -161,11 +161,14 @@ The server prints its Endpoint ID, share it to allow connections.
 # Server modes
 > iroh-ssh server --persist          # Interactive mode, e.g. use tmux (default SSH port 22)
 > iroh-ssh server --ssh-port 2222    # Custom SSH port (using ephemeral keys)
+> iroh-ssh server --ipv4-addr 0.0.0.0:4433   # Fixed UDP port, e.g. for a firewall rule
 
 # Client connection
 > ssh -o ProxyCommand="iroh-ssh proxy %h" user@<ENDPOINT_ID>                 # Connect to a remote server
 > ssh -o ProxyCommand="iroh-ssh proxy --relay-url <URL> %h" user@<ENDPOINT_ID>   # Set relay options on the proxy
 ```
+
+Logs go to stderr. Set `RUST_LOG` to see more, e.g. `RUST_LOG=iroh_ssh=info`.
 
 ## Security Model
 
