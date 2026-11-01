@@ -11,8 +11,7 @@ use clap::{Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
-    endpoint::{Connection, RelayMode},
-    protocol::{AcceptError, ProtocolHandler, Router},
+    endpoint::{Accepting, RelayMode},
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
@@ -122,14 +121,60 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
         SecretKey::generate()
     };
 
-    let endpoint = create_endpoint(secret_key, &args.common, true).await?;
-    let router = Router::builder(endpoint.clone())
-        .accept(ALPN, SshForwarder { ssh_port })
-        .spawn();
-
+    let endpoint = create_endpoint(secret_key, &args.common, vec![ALPN.to_vec()]).await?;
     println!("{}", endpoint.id());
-    tokio::signal::ctrl_c().await?;
-    router.shutdown().await?;
+
+    loop {
+        let incoming = tokio::select! {
+            incoming = endpoint.accept() => incoming,
+            _ = tokio::signal::ctrl_c() => break,
+        };
+        let Some(incoming) = incoming else {
+            break;
+        };
+        let accepting = match incoming.accept() {
+            Ok(accepting) => accepting,
+            Err(cause) => {
+                eprintln!("error accepting connection: {cause}");
+                // if accept fails, we want to continue accepting connections
+                continue;
+            }
+        };
+        tokio::spawn(async move {
+            if let Err(cause) = handle_endpoint_accept(accepting, ssh_port).await {
+                eprintln!("error handling connection: {cause:#}");
+            }
+        });
+    }
+    endpoint.close().await;
+    Ok(())
+}
+
+/// Forward an incoming connection to the local ssh server.
+async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::Result<()> {
+    let connection = accepting.await.context("error accepting connection")?;
+    let (mut send, mut recv) = connection
+        .accept_bi()
+        .await
+        .context("error accepting stream")?;
+    let mut tcp_stream = TcpStream::connect(("localhost", ssh_port))
+        .await
+        .context("error connecting to the ssh server")?;
+    let (mut tcp_recv, mut tcp_send) = tcp_stream.split();
+
+    let forward_from_tcp = async {
+        copy_flushing(&mut tcp_recv, &mut send).await.ok();
+        send.finish().ok();
+    };
+    let forward_to_tcp = async {
+        copy_flushing(&mut recv, &mut tcp_send).await.ok();
+        tcp_send.shutdown().await.ok();
+    };
+    tokio::join!(forward_from_tcp, forward_to_tcp);
+
+    // Dropping the connection discards data the client hasn't received yet,
+    // so let the client, which reads last, close it.
+    connection.closed().await;
     Ok(())
 }
 
@@ -140,7 +185,7 @@ fn parse_proxy_target(target: &str) -> anyhow::Result<EndpointId> {
 }
 
 async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
-    let endpoint = create_endpoint(SecretKey::generate(), &args.common, false).await?;
+    let endpoint = create_endpoint(SecretKey::generate(), &args.common, vec![]).await?;
 
     let connection = endpoint.connect(args.endpoint_id, ALPN).await?;
     let (mut send, mut recv) = connection.open_bi().await?;
@@ -191,13 +236,14 @@ where
 async fn create_endpoint(
     secret_key: SecretKey,
     common: &CommonArgs,
-    announce: bool,
+    alpns: Vec<Vec<u8>>,
 ) -> anyhow::Result<Endpoint> {
     let mdns_lookup = iroh_mdns_peer_lookup::Options::new()
-        .announce(announce)
+        .announce(!alpns.is_empty())
         .build();
     let mut builder = Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key)
+        .alpns(alpns)
         .address_lookup(DhtAddressLookup::builder())
         .address_lookup(iroh_mdns_peer_lookup::lookup(mdns_lookup).await?);
 
@@ -257,47 +303,6 @@ async fn check_ssh_server(port: u16) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(10), probe)
         .await
         .context("timed out")?
-}
-
-/// Forwards incoming iroh connections to the local ssh server.
-#[derive(Debug, Clone)]
-struct SshForwarder {
-    ssh_port: u16,
-}
-
-impl SshForwarder {
-    async fn forward(&self, connection: &Connection) -> anyhow::Result<()> {
-        let (mut send, mut recv) = connection.accept_bi().await?;
-        let mut tcp_stream = TcpStream::connect(("localhost", self.ssh_port))
-            .await
-            .context("failed to connect to the ssh server")?;
-        let (mut tcp_recv, mut tcp_send) = tcp_stream.split();
-
-        let forward_from_tcp = async {
-            copy_flushing(&mut tcp_recv, &mut send).await.ok();
-            send.finish().ok();
-        };
-        let forward_to_tcp = async {
-            copy_flushing(&mut recv, &mut tcp_send).await.ok();
-            tcp_send.shutdown().await.ok();
-        };
-        tokio::join!(forward_from_tcp, forward_to_tcp);
-
-        // Dropping the connection discards data the client hasn't received yet,
-        // so let the client, which reads last, close it.
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-impl ProtocolHandler for SshForwarder {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let remote = connection.remote_id();
-        if let Err(e) = self.forward(&connection).await {
-            eprintln!("Connection from {remote} failed: {e:#}");
-        }
-        Ok(())
-    }
 }
 
 /// Loads the server's key from `dir`, creating it on first use.
