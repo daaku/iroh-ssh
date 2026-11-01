@@ -21,6 +21,7 @@ use tokio::{
     },
     net::TcpStream,
 };
+use tracing_subscriber::EnvFilter;
 
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
@@ -89,6 +90,13 @@ struct ServerArgs {
 
 #[tokio::main]
 async fn main() {
+    // stdout carries the ssh stream in the proxy, so logs must stay on stderr.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("iroh_ssh=warn")),
+        )
+        .init();
     let args = Args::parse();
     let res = match args.command {
         Commands::Server(args) => server(args).await,
@@ -135,14 +143,15 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
         let accepting = match incoming.accept() {
             Ok(accepting) => accepting,
             Err(cause) => {
-                eprintln!("error accepting connection: {cause}");
+                tracing::warn!("error accepting connection: {cause}");
                 // if accept fails, we want to continue accepting connections
                 continue;
             }
         };
         tokio::spawn(async move {
             if let Err(cause) = handle_endpoint_accept(accepting, ssh_port).await {
-                eprintln!("error handling connection: {cause:#}");
+                // we should know about it, but it's not fatal
+                tracing::warn!("error handling connection: {cause:#}");
             }
         });
     }
@@ -153,10 +162,13 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
 /// Forward an incoming connection to the local ssh server.
 async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::Result<()> {
     let connection = accepting.await.context("error accepting connection")?;
+    let remote_endpoint_id = connection.remote_id();
+    tracing::info!("got connection from {remote_endpoint_id}");
     let (send, recv) = connection
         .accept_bi()
         .await
         .context("error accepting stream")?;
+    tracing::info!("accepted bidi stream from {remote_endpoint_id}");
     let tcp_stream = TcpStream::connect(("localhost", ssh_port))
         .await
         .context("error connecting to the ssh server")?;
@@ -182,7 +194,9 @@ async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
     let endpoint = create_endpoint(SecretKey::generate(), &args.common, vec![]).await?;
 
     let connection = endpoint.connect(args.endpoint_id, ALPN).await?;
+    tracing::info!("connected to {}", args.endpoint_id);
     let (send, recv) = connection.open_bi().await?;
+    tracing::info!("opened bidi stream to {}", args.endpoint_id);
 
     let forward_from_stdin = copy_to_noq(tokio::io::stdin(), send);
     let forward_to_stdout = copy_from_noq(recv, tokio::io::stdout());

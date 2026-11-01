@@ -2356,6 +2356,8 @@ dependencies = [
  "iroh-mdns-peer-lookup",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "z32",
 ]
 
