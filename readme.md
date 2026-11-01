@@ -54,14 +54,6 @@ chmod +x iroh-ssh-aarch64-unknown-linux-musl
 sudo mv iroh-ssh-aarch64-unknown-linux-musl /usr/local/bin/iroh-ssh
 ```
 
-macOS (Intel)
-```bash
-# macOS x86 64bit
-curl -LJO https://github.com/rustonbsd/iroh-ssh/releases/latest/download/iroh-ssh-x86_64-apple-darwin
-chmod +x iroh-ssh-x86_64-apple-darwin
-sudo mv iroh-ssh-x86_64-apple-darwin /usr/local/bin/iroh-ssh
-```
-
 macOS (ARM)
 ```bash
 # macOS arm
