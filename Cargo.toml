@@ -2,8 +2,7 @@
 name = "iroh-ssh"
 description = "ssh without ip"
 license = "MIT"
-authors = ["Zacharias Boehler <rustonbsd@mailfence.com>"]
-repository = "https://github.com/rustonbsd/iroh-ssh"
+repository = "https://github.com/daaku/iroh-ssh"
 readme = "readme.md"
 keywords = ["networking"]
 categories = ["network-programming"]

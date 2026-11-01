@@ -2,7 +2,7 @@
 
 Reach an ssh server by endpoint id instead of IP address, through NATs and firewalls.
 
-Binaries: [latest release](https://github.com/rustonbsd/iroh-ssh/releases/latest)
+Binaries: [latest release](../../releases/latest)
 
 ## Server
 
