@@ -1,5 +1,5 @@
 use std::{
-    io::Write as _,
+    io::{self, Write as _},
     path::{Path, PathBuf},
     str::FromStr as _,
     sync::Arc,
@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
-    endpoint::{Accepting, RelayMode},
+    endpoint::{Accepting, RecvStream, RelayMode, SendStream},
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
@@ -153,24 +153,18 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
 /// Forward an incoming connection to the local ssh server.
 async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::Result<()> {
     let connection = accepting.await.context("error accepting connection")?;
-    let (mut send, mut recv) = connection
+    let (send, recv) = connection
         .accept_bi()
         .await
         .context("error accepting stream")?;
-    let mut tcp_stream = TcpStream::connect(("localhost", ssh_port))
+    let tcp_stream = TcpStream::connect(("localhost", ssh_port))
         .await
         .context("error connecting to the ssh server")?;
-    let (mut tcp_recv, mut tcp_send) = tcp_stream.split();
+    let (tcp_recv, tcp_send) = tcp_stream.into_split();
 
-    let forward_from_tcp = async {
-        copy_flushing(&mut tcp_recv, &mut send).await.ok();
-        send.finish().ok();
-    };
-    let forward_to_tcp = async {
-        copy_flushing(&mut recv, &mut tcp_send).await.ok();
-        tcp_send.shutdown().await.ok();
-    };
-    tokio::join!(forward_from_tcp, forward_to_tcp);
+    let forward_from_tcp = copy_to_noq(tcp_recv, send);
+    let forward_to_tcp = copy_from_noq(recv, tcp_send);
+    let (_, _) = tokio::join!(forward_from_tcp, forward_to_tcp);
 
     // Dropping the connection discards data the client hasn't received yet,
     // so let the client, which reads last, close it.
@@ -188,23 +182,21 @@ async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
     let endpoint = create_endpoint(SecretKey::generate(), &args.common, vec![]).await?;
 
     let connection = endpoint.connect(args.endpoint_id, ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
+    let (send, recv) = connection.open_bi().await?;
 
-    // A failed write means the server stopped reading, and whatever it sent
-    // before that is still worth receiving, so only the read side's errors matter.
-    let forward_from_stdin = async {
-        copy_flushing(&mut tokio::io::stdin(), &mut send).await.ok();
-        send.finish().ok();
-    };
-    let mut stdout = tokio::io::stdout();
-    let forward_to_stdout = copy_flushing(&mut recv, &mut stdout);
+    let forward_from_stdin = copy_to_noq(tokio::io::stdin(), send);
+    let forward_to_stdout = copy_from_noq(recv, tokio::io::stdout());
     tokio::pin!(forward_to_stdout);
 
     // Keep reading after stdin closes, but don't wait for stdin once the server
     // is done: ssh only closes it after seeing EOF from us.
     tokio::select! {
-        result = &mut forward_to_stdout => result?,
-        () = forward_from_stdin => forward_to_stdout.await?,
+        res = &mut forward_to_stdout => res?,
+        // A failed write means the server stopped reading, and whatever it sent
+        // before that is still worth receiving, so only the read side's errors matter.
+        _ = forward_from_stdin => forward_to_stdout.await?,
+        // Close the connection so the server doesn't wait for an idle timeout.
+        _ = tokio::signal::ctrl_c() => {}
     };
 
     connection.close(0u32.into(), b"done");
@@ -212,21 +204,34 @@ async fn proxy(args: ProxyArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Copy from a reader to a noq stream, then finish the stream.
+async fn copy_to_noq(mut from: impl AsyncRead + Unpin, mut send: SendStream) -> io::Result<()> {
+    let res = copy_flushing(&mut from, &mut send).await;
+    send.finish().ok();
+    res
+}
+
+/// Copy from a noq stream to a writer, then shut the writer down.
+async fn copy_from_noq(mut recv: RecvStream, mut to: impl AsyncWrite + Unpin) -> io::Result<()> {
+    let res = copy_flushing(&mut recv, &mut to).await;
+    to.shutdown().await.ok();
+    res
+}
+
 /// Copies until EOF. Unlike `tokio::io::copy` the buffer is larger than 8K, which
 /// is the main limit on throughput, and unlike `tokio::io::copy_buf` every chunk
 /// is flushed, because stdout holds back data that doesn't end in a newline.
-async fn copy_flushing<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+async fn copy_flushing(
+    from: &mut (impl AsyncRead + Unpin),
+    to: &mut (impl AsyncWrite + Unpin),
+) -> io::Result<()> {
     let mut buf = vec![0; COPY_BUFFER_SIZE];
     loop {
-        match reader.read(&mut buf).await? {
-            0 => return writer.flush().await,
+        match from.read(&mut buf).await? {
+            0 => return to.flush().await,
             n => {
-                writer.write_all(&buf[..n]).await?;
-                writer.flush().await?;
+                to.write_all(&buf[..n]).await?;
+                to.flush().await?;
             }
         }
     }
@@ -329,7 +334,7 @@ fn get_or_create_secret(dir: &Path) -> anyhow::Result<SecretKey> {
 }
 
 /// Creates a file only the current user can read, failing if it already exists.
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
