@@ -76,6 +76,64 @@ sudo launchctl bootout system/org.daaku.iroh-ssh
 sudo rm /Library/LaunchDaemons/org.daaku.iroh-ssh.plist
 ```
 
+### Linux service
+
+Install the binary (x86_64 or aarch64):
+
+```sh
+sudo curl -fLo /usr/bin/iroh-ssh https://github.com/daaku/iroh-ssh/releases/latest/download/iroh-ssh-$(uname -m)-unknown-linux-musl
+sudo chmod 755 /usr/bin/iroh-ssh
+```
+
+Then add a systemd service. It runs as a throwaway user with no access to home
+directories, and keeps its key in `/var/lib/iroh-ssh`:
+
+```sh
+sudo tee /etc/systemd/system/iroh-ssh.service > /dev/null <<'EOF'
+[Unit]
+Description=%p
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=%p
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/iroh-ssh server --persist --key-dir %S/%p
+Restart=on-failure
+RestartSec=3s
+
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl enable --now iroh-ssh
+```
+
+This starts it now and on every boot. The endpoint id and any warnings are in
+`journalctl -u iroh-ssh`. After replacing the binary, run
+`sudo systemctl restart iroh-ssh`.
+
 ## Client
 
 In `~/.ssh/config`:
