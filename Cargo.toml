@@ -1,6 +1,6 @@
 [package]
 name = "iroh-ssh"
-version = "0.5.2"
+version = "0.5.3"
 categories = ["network-programming"]
 edition = "2024"
 keywords = ["networking"]
