@@ -11,14 +11,14 @@ description = "ssh over iroh"
 
 [dependencies]
 anyhow = "1.0.104"
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
 homedir = "0.3.6"
-iroh = "1.3.0"
-iroh-mainline-address-lookup = "0.6.0"
+iroh = "1.4.1"
+iroh-mainline-address-lookup = "0.6.1"
 iroh-mdns-peer-lookup = "0.1.2"
 mimalloc = { version = "0.1", default-features = false }
 tokio = {
-  version = "1.53.2",
+  version = "1.54.1",
   features = [
     "io-std",
     "io-util",
