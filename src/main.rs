@@ -12,7 +12,9 @@ use clap::{Parser, Subcommand};
 use homedir::my_home;
 use iroh::{
     Endpoint, EndpointId, RelayConfig, RelayMap, RelayUrl, SecretKey,
-    endpoint::{Accepting, QuicTransportConfig, RecvStream, RelayMode, SendStream, VarInt},
+    endpoint::{
+        Accepting, Connection, QuicTransportConfig, RecvStream, RelayMode, SendStream, VarInt,
+    },
 };
 use iroh_mainline_address_lookup::DhtAddressLookup;
 use tokio::{
@@ -32,6 +34,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const ALPN: &[u8] = b"/iroh/ssh";
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Holepunching is retried every 5s, so this leaves room for a second attempt.
+const DIRECT_TIMEOUT: Duration = Duration::from_secs(7);
 /// The 1.25 MB default limits a stream to about 70 MB/s at the 16ms RTT of a busy
 /// Wi-Fi link. Larger windows gave no further gain up to 30ms.
 const STREAM_RECEIVE_WINDOW: u32 = 4 * 1024 * 1024;
@@ -192,6 +196,7 @@ async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::
     let connection = accepting.await.context("error accepting connection")?;
     let remote_endpoint_id = connection.remote_id();
     tracing::info!("got connection from {remote_endpoint_id}");
+    tokio::spawn(warn_if_not_direct(connection.clone()));
     let (send, recv) = connection
         .accept_bi()
         .await
@@ -215,6 +220,34 @@ async fn handle_endpoint_accept(accepting: Accepting, ssh_port: u16) -> anyhow::
     // so let the client, which reads last, close it.
     connection.closed().await;
     Ok(())
+}
+
+/// Warn if a connection is still on the relay after [`DIRECT_TIMEOUT`]. iroh
+/// prefers any working direct path over the relay, so that means holepunching failed.
+async fn warn_if_not_direct(connection: Connection) {
+    tokio::select! {
+        _ = connection.closed() => return,
+        _ = tokio::time::sleep(DIRECT_TIMEOUT) => {}
+    }
+    let paths = connection.paths();
+    if paths.iter().any(|p| p.is_selected() && p.is_ip()) {
+        return;
+    }
+    let paths: Vec<_> = paths
+        .iter()
+        .map(|p| {
+            format!(
+                "{:?} selected={} rtt={:?}",
+                p.remote_addr(),
+                p.is_selected(),
+                p.rtt()
+            )
+        })
+        .collect();
+    tracing::warn!(
+        "connection from {} still not direct after {DIRECT_TIMEOUT:?}: {paths:?}",
+        connection.remote_id()
+    );
 }
 
 /// Parses the `%h` or `%h:%p` argument given to the proxy into an endpoint id.
