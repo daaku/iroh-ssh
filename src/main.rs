@@ -164,10 +164,15 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
     }
     println!("{}", endpoint.id());
 
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
     loop {
         let incoming = tokio::select! {
             incoming = endpoint.accept() => incoming,
-            _ = tokio::signal::ctrl_c() => break,
+            res = &mut shutdown => {
+                res.context("error listening for shutdown signals")?;
+                break;
+            }
         };
         let Some(incoming) = incoming else {
             break;
@@ -189,6 +194,23 @@ async fn server(args: ServerArgs) -> anyhow::Result<()> {
     }
     endpoint.close().await;
     Ok(())
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM, which service managers send to stop or
+/// restart the server. Dying on SIGTERM without closing the endpoint would leave
+/// clients hanging until their connection's idle timeout, about 30s.
+async fn shutdown_signal() -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            res = tokio::signal::ctrl_c() => res,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 /// Forward an incoming connection to the local ssh server.
