@@ -80,6 +80,9 @@ struct CommonArgs {
     ipv6_addr: Option<SocketAddrV6>,
 
     /// Use only these relay servers, replacing the defaults (repeatable)
+    ///
+    /// Without --relay-url or --extra-relay-url, the relays can instead be set
+    /// in IROH_RELAY_URL, separated by commas.
     #[arg(long, value_name = "URL", conflicts_with = "extra_relay_url")]
     relay_url: Vec<RelayUrl>,
 
@@ -371,8 +374,9 @@ async fn create_endpoint(
     if let Some(addr) = common.ipv6_addr {
         builder = builder.bind_addr(addr)?;
     }
+    let relay_urls = relay_urls(common, std::env::var("IROH_RELAY_URL").ok().as_deref())?;
     if let Some(relay_map) = custom_relay_map(
-        &common.relay_url,
+        &relay_urls,
         &common.extra_relay_url,
         relay_auth_token().as_deref(),
     ) {
@@ -386,6 +390,23 @@ fn relay_auth_token() -> Option<String> {
     std::env::var("IROH_RELAY_TOKEN")
         .ok()
         .filter(|token| !token.is_empty())
+}
+
+/// The relays from --relay-url, or from `env` (the value of IROH_RELAY_URL) when
+/// neither relay flag is given, so that flags always win over the environment.
+fn relay_urls(common: &CommonArgs, env: Option<&str>) -> anyhow::Result<Vec<RelayUrl>> {
+    if !common.relay_url.is_empty() || !common.extra_relay_url.is_empty() {
+        return Ok(common.relay_url.clone());
+    }
+    env.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(|url| {
+            RelayUrl::from_str(url)
+                .with_context(|| format!("invalid relay url '{url}' in IROH_RELAY_URL"))
+        })
+        .collect()
 }
 
 /// Builds the relay map for the configured relays, or `None` to use the iroh
@@ -486,6 +507,50 @@ mod tests {
 
     fn url() -> RelayUrl {
         RelayUrl::from_str("https://relay.example.com").unwrap()
+    }
+
+    fn common_args(flags: &[&str]) -> CommonArgs {
+        let args = [&["iroh-ssh", "proxy", ENDPOINT_ID], flags].concat();
+        let Commands::Proxy(args) = Args::try_parse_from(args).unwrap().command else {
+            panic!("expected the proxy command");
+        };
+        args.common
+    }
+
+    #[test]
+    fn env_relay_urls_are_comma_separated() {
+        let urls = relay_urls(
+            &common_args(&[]),
+            Some("https://a.example.com, https://b.example.com"),
+        )
+        .unwrap();
+        let expected: Vec<RelayUrl> = ["https://a.example.com", "https://b.example.com"]
+            .iter()
+            .map(|url| url.parse().unwrap())
+            .collect();
+        assert_eq!(urls, expected);
+    }
+
+    #[test]
+    fn empty_env_relay_url_keeps_defaults() {
+        assert!(relay_urls(&common_args(&[]), Some("")).unwrap().is_empty());
+        assert!(relay_urls(&common_args(&[]), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_env_relay_url_names_the_variable() {
+        let err = relay_urls(&common_args(&[]), Some("not a url")).unwrap_err();
+        assert!(format!("{err:#}").contains("IROH_RELAY_URL"));
+    }
+
+    #[test]
+    fn relay_flags_override_env_relay_url() {
+        let env = Some("https://env.example.com");
+        let flag = "https://flag.example.com";
+        let urls = relay_urls(&common_args(&["--relay-url", flag]), env).unwrap();
+        assert_eq!(urls, vec![flag.parse().unwrap()]);
+        let urls = relay_urls(&common_args(&["--extra-relay-url", flag]), env).unwrap();
+        assert!(urls.is_empty());
     }
 
     #[test]
